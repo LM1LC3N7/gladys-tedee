@@ -1,67 +1,101 @@
-# Template de démonstration
+# Tedee
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Intégration non officielle, sans lien avec Tedee. Elle amène dans Gladys les
+serrures connectées **Tedee GO** et **Tedee PRO** appairées à un **Tedee
+Bridge**, par l'API locale officielle du bridge (Bridge API v1.0) : tout reste
+sur votre réseau local, sans le cloud Tedee.
 
-## Ce que vous obtenez
+> **Attention : cette intégration n'a jamais été testée sur un vrai bridge ni
+> sur une vraie serrure.** Elle a été écrite d'après la documentation
+> officielle de l'API Bridge et la bibliothèque aiotedee, et testée seulement
+> contre un faux bridge. Vos retours sont les bienvenus.
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+## Ce qui est disponible
 
-## Configuration
+Pour chaque serrure :
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+| Fonctionnalité                | Détail                                                                                                                                         |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Verrou                        | Commande : 1 verrouille, 0 déverrouille (si autorisé). Affiche 1 verrouillée, 0 déverrouillée ou semi-verrouillée.                             |
+| État de la serrure            | 0 déverrouillée, 1 verrouillée, 2 en mouvement, 3 erreur (bloquée ou non calibrée).                                                            |
+| Statut                        | Texte : verrouillée, déverrouillée, semi-verrouillée, pêne tiré, en mouvement, bloquée, non calibrée, en mise à jour, non connectée au bridge. |
+| Ouvrir la porte (pull spring) | Bouton, seulement si le pull spring est activé dans l'application Tedee (si autorisé).                                                         |
+| Porte                         | Capteur d'ouverture, seulement si un Tedee Door Sensor est appairé.                                                                            |
+| Batterie                      | En %.                                                                                                                                          |
+| En charge                     | Tedee PRO seulement (batterie rechargeable).                                                                                                   |
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+La connexion de chaque serrure au bridge apparaît dans le badge de
+l'appareil : « injoignable » (avec un point orange) quand la serrure n'est plus
+connectée au bridge, « injoignable » pour tous quand le bridge ne répond plus.
 
-## Actions
+Un **Tedee Keypad** que le bridge listerait apparaît avec sa batterie
+seulement ; l'API locale ne documente pas les claviers, ce n'est pas vérifié.
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+## Installation
 
-## Scènes
+1. Dans l'application Tedee, ouvrez le bridge, puis **Paramètres > API locale**
+   (Bridge API), activez-la et notez le **jeton** et le **mode** du jeton
+   (haché/« encrypted » ou simple/« plain »). Le firmware du bridge doit être
+   assez récent pour proposer l'API locale.
+2. Donnez au bridge une adresse IP fixe dans votre box (réservation DHCP).
+3. Dans Gladys, installez l'intégration Tedee et saisissez l'**adresse IP du
+   bridge**, le **jeton d'API** et le **mode du jeton**.
+4. Cliquez sur **Tester la connexion**, puis ajoutez les serrures depuis
+   l'onglet **Découverte**.
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+## Sécurité
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+- **Verrouiller est toujours possible.**
+- **Déverrouiller** est désactivé par défaut : activez **Autoriser le
+  déverrouillage des serrures depuis Gladys** pour le permettre (scènes,
+  tableau de bord, assistants vocaux).
+- **Ouvrir la porte (pull spring)** est désactivé par défaut : activez
+  **Autoriser l'ouverture de la porte**. Ouvrir une porte verrouillée la
+  déverrouille aussi : il faut alors les deux options.
+- Avant chaque commande, l'intégration **relit l'état de la serrure** sur le
+  bridge. La commande est refusée si cette lecture échoue, si la serrure n'est
+  pas connectée au bridge, si elle est en mouvement ou si son état est inconnu
+  (non calibrée, en mise à jour).
+- Les commandes d'une même serrure passent **une par une**.
+- Une commande qui ne peut pas être envoyée dans les **3,5 secondes** qui
+  suivent son arrivée est refusée : Gladys affiche un échec au bout de
+  5 secondes, et rien ne doit bouger après cet échec.
+- Si le bridge ne confirme pas une commande à temps, Gladys affiche un échec,
+  mais la serrure peut quand même bouger : vérifiez son état.
 
-## Tableau de bord
+## Jeton et confidentialité
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+- Le jeton est **gardé par Gladys dans sa base, jamais réaffiché, envoyé
+  seulement au bridge**. Il n'apparaît jamais dans les journaux.
+- L'API locale du bridge est en **HTTP, sans chiffrement**. En mode **haché**
+  (recommandé), le jeton ne circule jamais : chaque requête porte un
+  condensé SHA-256 du jeton et de l'heure. Ce mode demande que l'horloge de la
+  machine Gladys soit à l'heure. En mode **simple**, le jeton circule en clair
+  sur le réseau local : quiconque l'observe peut commander vos serrures.
+- Rien ne part sur Internet.
 
-## Dépannage
+## Rafraîchissement
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+Le bridge est relu toutes les 10 secondes par défaut (de 5 à 300 secondes),
+et quelques fois juste après une commande pour suivre le mouvement. Le bridge
+sait prévenir une adresse HTTP à chaque événement (callbacks), mais un
+conteneur d'intégration Gladys ne peut pas déclarer de port joignable depuis
+le réseau local : l'intégration interroge donc le bridge.
+
+## Erreurs
+
+- **Jeton refusé** : vérifiez le jeton et le mode ; en mode haché, l'horloge
+  de la machine Gladys. Nouvel essai toutes les 5 minutes, ou tout de suite
+  avec **Tester la connexion**.
+- **Bridge injoignable** : nouvel essai après 10 s, 30 s, 1 min, 2 min puis
+  toutes les 5 minutes.
+- **Le bridge demande de ralentir** (429) : pause d'au moins 1 minute (au plus
+  6 h), lectures et commandes comprises.
+
+## Crédits
+
+- Documentation officielle de l'API Bridge de Tedee :
+  https://docs.tedee.com/bridge-api
+- La logique du client local est portée en JavaScript depuis
+  [aiotedee](https://github.com/zweckj/aiotedee) de Josef Zweck (licence MIT,
+  voir `THIRD_PARTY_NOTICES.md`).

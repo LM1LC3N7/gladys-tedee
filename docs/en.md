@@ -1,61 +1,100 @@
-# Demo Devices Template
+# Tedee
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Unofficial integration, not affiliated with Tedee. It brings the **Tedee GO**
+and **Tedee PRO** smart locks paired with a **Tedee Bridge** into Gladys,
+through the official local API of the bridge (Bridge API v1.0): everything
+stays on your local network, without the Tedee cloud.
+
+> **Warning: this integration has never been tested with a real bridge or a
+> real lock.** It was written from the official Bridge API documentation and
+> the aiotedee library, and tested against a fake bridge only. Feedback is
+> welcome.
 
 ## What you get
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+For each lock:
 
-## Configuration
+| Feature                     | Detail                                                                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Lock                        | Command: 1 locks, 0 unlocks (when allowed). Shows 1 locked, 0 unlocked or half-locked.                                    |
+| Lock state                  | 0 unlocked, 1 locked, 2 moving, 3 error (jammed or not calibrated).                                                       |
+| Status                      | Text: locked, unlocked, half-locked, latch pulled, moving, jammed, not calibrated, updating, not connected to the bridge. |
+| Open the door (pull spring) | Button, only when the pull spring is on in the Tedee app (when allowed).                                                  |
+| Door                        | Opening sensor, only when a Tedee Door Sensor is paired.                                                                  |
+| Battery                     | In %.                                                                                                                     |
+| Charging                    | Tedee PRO only (rechargeable battery).                                                                                    |
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+The connection of each lock to the bridge shows in the device badge:
+"unreachable" (with an orange dot) when the lock is no longer connected to the
+bridge, "unreachable" for all when the bridge no longer answers.
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+A **Tedee Keypad** listed by the bridge shows with its battery only; the local
+API does not document keypads, this is not verified.
 
-## Actions
+## Setup
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+1. In the Tedee app, open the bridge, then **Settings > Local API** (Bridge
+   API), turn it on and note the **token** and the token **mode** (hashed /
+   "encrypted" or plain). The bridge firmware must be recent enough to offer
+   the local API.
+2. Give the bridge a fixed IP address in your router (DHCP reservation).
+3. In Gladys, install the Tedee integration and enter the **IP address of the
+   bridge**, the **API token** and the **token mode**.
+4. Click **Test the connection**, then add the locks from the **Discovery**
+   tab.
 
-## Scenes
+## Safety
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+- **Locking is always possible.**
+- **Unlocking** is off by default: turn on **Allow unlocking the locks from
+  Gladys** to allow it (scenes, dashboard, voice assistants).
+- **Opening the door (pull spring)** is off by default: turn on **Allow
+  opening the door**. Opening a locked door also unlocks it: both options are
+  needed then.
+- Before each command, the integration **reads the lock again** on the
+  bridge. The command is refused when that read fails, when the lock is not
+  connected to the bridge, when it moves, or when its state is unknown (not
+  calibrated, updating).
+- The commands of one lock run **one at a time**.
+- A command that cannot be sent within **3.5 seconds** of its arrival is
+  refused: Gladys shows a failure after 5 seconds, and nothing must move after
+  that failure.
+- When the bridge does not confirm a command in time, Gladys shows a failure,
+  but the lock may still move: check its state.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+## Token and privacy
 
-## Dashboard
+- The token is **kept by Gladys in its database, never shown again, sent only
+  to the bridge**. It never appears in the logs.
+- The local API of the bridge is **plain HTTP, without encryption**. In
+  **hashed** mode (recommended), the token never travels: each request carries
+  a SHA-256 digest of the token and the time. This mode needs the clock of the
+  Gladys host on time. In **plain** mode, the token travels in clear on the
+  local network: whoever watches it can command your locks.
+- Nothing goes to the Internet.
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+## Refresh
 
-## Troubleshooting
+The bridge is read every 10 seconds by default (5 to 300 seconds), and a few
+times right after a command to follow the movement. The bridge can call an
+HTTP address on each event (callbacks), but a Gladys integration container
+cannot declare a port reachable from the local network: the integration polls
+the bridge instead.
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+## Errors
+
+- **Token refused**: check the token and the mode; in hashed mode, the clock
+  of the Gladys host. Tried again every 5 minutes, or at once with **Test the
+  connection**.
+- **Bridge unreachable**: tried again after 10 s, 30 s, 1 min, 2 min, then
+  every 5 minutes.
+- **The bridge asks to slow down** (429): a pause of at least 1 minute (at
+  most 6 h), reads and commands included.
+
+## Credits
+
+- Official documentation of the Tedee Bridge API:
+  https://docs.tedee.com/bridge-api
+- The logic of the local client is ported to JavaScript from
+  [aiotedee](https://github.com/zweckj/aiotedee) by Josef Zweck (MIT license,
+  see `THIRD_PARTY_NOTICES.md`).

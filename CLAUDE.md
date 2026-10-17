@@ -16,8 +16,8 @@ its only runtime dependency. It started from the official JavaScript template.
 ```bash
 npm install
 npm test                                  # node --test, the built-in runner
-node --test test/devices.test.js          # one file
-node --test --test-name-pattern "plug"    # tests whose name matches
+node --test test/app.test.js              # one file
+node --test --test-name-pattern "unlock"  # tests whose name matches
 npm run lint                              # ESLint
 npm run format:check                      # Prettier, as the CI runs it
 npm run format                            # Prettier, fix in place
@@ -31,18 +31,30 @@ pushing.
 ## Architecture
 
 ```
-index.js                          SDK wiring only: handlers registered before connect()
-src/devices/index.js              registry of the device blueprints + dispatch helpers
-src/devices/<type>.js             one device type per file (buildDevice, onPoll, onSetValue...)
-src/scenes.js                     scene action handlers (manifest `scene_actions`)
-src/widgets.js                    dashboard widget handlers (manifest `widgets`)
-src/config.js                     DEFAULT_CONFIG (mirrors the manifest defaults) + normalization
-src/weather.js                    example driver (Open-Meteo)
+index.js                          SDK wiring only (src/handlers.js, before connect())
+src/handlers.js                   the SDK handlers -> TedeeApp (shared with the e2e tests)
+src/app.js                        TedeeApp: polling, devices, badges, commands and their safety rules
+src/bridge.js                     Tedee Bridge local API client (api_token, timeouts, error kinds)
+src/tedee.js                      lock list -> devices (pure)
+src/devices.js                    devices -> Gladys devices and states (pure)
+src/publisher.js                  states to Gladys within 300 states/min
+src/config.js                     DEFAULTS (mirror the manifest defaults) + normalization
+src/constants.js, src/i18n.js     Bridge API enums, timings; en/fr texts
 gladys-assistant-integration.json manifest: name, config_schema, actions, image...
 docs/en.md, docs/fr.md            user documentation, re-hosted by Gladys (mandatory)
-test/                             node --test, against the SDK's fake Gladys (integration-sdk/testing)
+test/                             node --test: SDK fake Gladys + fake bridge on 127.0.0.1
 .github/scripts/release.mjs       release helpers (manifest bump, changelog), tested in test/
+TODO.md                           status, things to check on a real bridge, decisions
+THIRD_PARTY_NOTICES.md            MIT notice of aiotedee (ported logic), copied into the image
 ```
+
+## Safety rules (locks)
+
+Locking is always allowed. Unlocking (`allow_unlock`) and opening the door
+(`allow_pull`) stay off by default. Commands of one lock are serialized, the
+lock is read again just before acting, and a command is refused when that read
+fails, when the lock is offline, moving or in an unknown state, or when it
+cannot be sent within 3.5 s of its arrival. Never weaken these rules.
 
 ## Rules
 
@@ -73,4 +85,4 @@ test/                             node --test, against the SDK's fake Gladys (in
 - **User-facing text** is bilingual (English and French): action messages,
   manifest texts, and `docs/en.md` / `docs/fr.md`, kept in sync.
 - **Style.** Prettier formats, ESLint catches mistakes. Comments explain why,
-  in English. Tests never touch the network.
+  in English. Tests never leave 127.0.0.1 (the fake bridge).
