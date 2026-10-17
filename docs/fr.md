@@ -99,8 +99,12 @@ le réseau local : l'intégration interroge donc le bridge.
 - **Jeton refusé** (401, après un second essai avec une nouvelle heure) :
   vérifiez le jeton ; en mode haché, l'horloge de la machine Gladys. Nouvel
   essai toutes les 5 minutes, ou tout de suite avec **Tester la connexion**.
-- **Mode du jeton refusé** (403) : le mode ne correspond pas à l'interrupteur
-  « Encrypted token » de l'application.
+- **HTTP 403 à la lecture** : la cause n'est pas documentée pour les lectures ;
+  le plus probable est un mode de jeton qui ne correspond pas à l'interrupteur
+  « Encrypted token » de l'application (hypothèse). Nouvel essai toutes les
+  5 minutes.
+- **HTTP 403 sur un déverrouillage** : le bridge a refusé le mode de
+  déverrouillage (spécification v1.19) ; la serrure ne s'est pas déverrouillée.
 - **Serrure déconnectée** (405) et **erreur Bluetooth** entre le bridge et la
   serrure (406) : la commande n'est pas exécutée, un message le dit.
 - **Bridge injoignable** : nouvel essai après 10 s, 30 s, 1 min, 2 min puis

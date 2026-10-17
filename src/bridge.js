@@ -13,8 +13,8 @@
 //   locks before the polling.
 // - A 401 is tried once more with a new timestamp before it counts.
 // - Every answer is read up to LIMITS.responseBytes, with a timeout.
-// - Errors carry a `kind`: refused (401), mode (403: the token mode does not
-//   match), disconnected (405: lock not connected), ble (406: Bluetooth error
+// - Errors carry a `kind`: refused (401), mode (403: on /unlock, the unlock
+//   mode refused, per v1.19; on a read, assumed a token mode mismatch), disconnected (405: lock not connected), ble (406: Bluetooth error
 //   between bridge and lock), rate_limited (429, with `retryAfter` in ms),
 //   unavailable (5xx), not_found (404), conflict (409), rejected (other 4xx),
 //   network, timeout, bad_response, size, late (not started in time).

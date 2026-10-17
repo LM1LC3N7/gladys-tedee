@@ -95,8 +95,11 @@ the bridge instead.
 - **Token refused** (401, after a second try with a new time): check the
   token; in hashed mode, the clock of the Gladys host. Tried again every 5
   minutes, or at once with **Test the connection**.
-- **Token mode refused** (403): the mode does not match the "Encrypted token"
-  switch of the app.
+- **HTTP 403 on a read**: the cause is not documented for the reads; most
+  likely a token mode that does not match the "Encrypted token" switch of the
+  app (an assumption). Tried again every 5 minutes.
+- **HTTP 403 on an unlock**: the bridge refused the unlock mode (specification
+  v1.19); the lock did not unlock.
 - **Lock disconnected** (405) and **Bluetooth error** between the bridge and
   the lock (406): the command is not executed, a message says so.
 - **Bridge unreachable**: tried again after 10 s, 30 s, 1 min, 2 min, then

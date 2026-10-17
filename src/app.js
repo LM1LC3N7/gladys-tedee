@@ -25,7 +25,7 @@
 import { DEVICE_TRANSPORTS, createLogger } from '@gladysassistant/integration-sdk';
 import { BridgeClient, BridgeError, errorReason } from './bridge.js';
 import { normalizeConfig } from './config.js';
-import { LOCK_STATE, TIMINGS, UNLOCK_MODE } from './constants.js';
+import { LOCK_STATE, MOVING_STATES, TIMINGS, UNLOCK_MODE } from './constants.js';
 import {
   COMMAND_ROLES,
   buildDevices,
@@ -40,6 +40,9 @@ import { isLocked, isMoving, isStill, parseDevice, parseDevices } from './tedee.
 
 /** Errors meaning the bridge did not answer usefully: every device is unreachable. */
 const OFFLINE = new Set(['network', 'timeout', 'unavailable', 'bad_response', 'size']);
+
+/** The states that show the latch being pulled. */
+const PULL_STATES = [LOCK_STATE.PULLING, LOCK_STATE.PULLED, LOCK_STATE.UNPULLING];
 
 /** Command errors after which the bridge may have executed it anyway. */
 const MAYBE_SENT = new Set(['timeout', 'network', 'unavailable', 'bad_response', 'size']);
@@ -77,8 +80,9 @@ export class TedeeApp {
     /** lockId -> tail of its command chain: one command at a time per lock */
     this.commandChains = new Map();
     /**
-     * lockId -> { expected, moving, until }: a command was sent (or may have
-     * been). Until a read shows `expected` (or jammed), or `until`, every
+     * lockId -> { expected, moving, pulls, from, seenMoving, seenPull, until }:
+     * a command was sent (or may have been). Until observe() sees its end
+     * (see there), or `until`, every
      * command of the lock is refused and the lock is shown `moving`.
      */
     this.guards = new Map();
@@ -516,6 +520,10 @@ export class TedeeApp {
     let send;
     let moving;
     let expected = LOCK_STATE.UNLOCKED;
+    // The command pulls the latch: from UNLOCKED, the end state is the start
+    // state, so only a pull seen in progress ends the guard early.
+    let pulls = role === 'pull';
+    let unlockRequest = false;
     const options = {
       priority: 'high',
       // Sent 3.5 s after the arrival at the latest; answered by 4.6 s (1.2 s at least).
@@ -540,6 +548,8 @@ export class TedeeApp {
       }
       send = () => this.client.unlock(id, UNLOCK_MODE.WITHOUT_PULL, options);
       moving = LOCK_STATE.UNLOCKING;
+      pulls = lock.autoPullSpring;
+      unlockRequest = true;
     } else {
       if (!lock.pullSpring) {
         throw this.refusal(T.denied.pullSpring);
@@ -548,6 +558,7 @@ export class TedeeApp {
         // Mode 4 unlocks, and pulls only when the auto pull spring is on.
         send = () => this.client.unlock(id, UNLOCK_MODE.UNLOCK_OR_PULL, options);
         moving = LOCK_STATE.UNLOCKING;
+        unlockRequest = true;
       } else {
         send = () => this.client.pull(id, options);
         moving = LOCK_STATE.PULLING;
@@ -565,11 +576,15 @@ export class TedeeApp {
       }
       if (MAYBE_SENT.has(err.kind)) {
         // The request may have reached the bridge: the lock may move anyway.
-        this.guard(lock, expected, moving);
+        this.guard(lock, { expected, moving, pulls });
         this.followUp();
         if (err.kind === 'timeout' || err.kind === 'network') {
           throw new Error(word(T.sentNoAnswer, this.config.language), { cause: err });
         }
+      }
+      if (err.kind === 'mode' && unlockRequest) {
+        // Bridge API v1.19: a 403 on /unlock is a refused unlock mode.
+        throw new Error(word(T.unlockModeRefused, this.config.language), { cause: err });
       }
       if (err.kind === 'disconnected') {
         throw new Error(word(T.lockDisconnected, this.config.language), { cause: err });
@@ -584,14 +599,26 @@ export class TedeeApp {
     this.logger.info(
       `${deviceName(lock, 'en')}: ${role === 'pull' ? 'pull' : value ? 'lock' : 'unlock'} sent`,
     );
-    this.guard(lock, expected, moving);
+    this.guard(lock, { expected, moving, pulls });
     this.followUp();
   }
 
-  /** Sets the guard of a lock after a command, and shows it moving. */
-  guard(lock, expected, moving) {
-    this.guards.set(lock.id, { expected, moving, until: this.now() + TIMINGS.commandGuard });
-    const shown = this.observe(lock);
+  /**
+   * Sets the guard of a lock after a command, and shows it moving. `lock`:
+   * the state read just before the command (`from`).
+   */
+  guard(lock, { expected, moving, pulls }) {
+    this.guards.set(lock.id, {
+      expected,
+      moving,
+      pulls,
+      from: lock.state,
+      fromJammed: lock.jammed,
+      seenMoving: false,
+      seenPull: false,
+      until: this.now() + TIMINGS.commandGuard,
+    });
+    const shown = { ...lock, state: moving, jammed: false };
     this.devices.set(lock.id, shown);
     this.queue(shown);
     this.flush();
@@ -607,16 +634,32 @@ export class TedeeApp {
   }
 
   /**
-   * A lock as read, through its guard: the guard ends on the expected end
-   * state or on a jam (never on an unknown state), or when it expires;
-   * meanwhile the lock is shown moving.
+   * A lock as read, through its guard. The guard ends, besides its expiry:
+   * - on a jam (one already there before the command only after a movement);
+   * - on the expected end state, when it differs from the start state or a
+   *   movement was seen since the command (a read sent before the command
+   *   shows the start state: it must not end the guard);
+   * - for a command that pulls the latch, on the expected end state only
+   *   after a pull was seen (PULLING, PULLED or UNPULLING): from UNLOCKED,
+   *   the end state is the start state.
+   * Never on an unknown state. Meanwhile the lock is shown moving.
    */
   observe(lock) {
     if (!this.guardActive(lock.id)) {
       return lock;
     }
     const guard = this.guards.get(lock.id);
-    if (lock.connected && (lock.jammed || lock.state === guard.expected)) {
+    if (lock.connected && MOVING_STATES.includes(lock.state)) {
+      guard.seenMoving = true;
+      if (PULL_STATES.includes(lock.state)) {
+        guard.seenPull = true;
+      }
+    }
+    const jamEnds = lock.jammed && (!guard.fromJammed || guard.seenMoving);
+    const endReached =
+      lock.state === guard.expected &&
+      (guard.pulls ? guard.seenPull : lock.state !== guard.from || guard.seenMoving);
+    if (lock.connected && (jamEnds || endReached)) {
       this.guards.delete(lock.id);
       return lock;
     }

@@ -30,7 +30,7 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (TedeeApp) ⇄ src/bridge.js �
 - **Reading**: `GET /bridge` once per start, then `GET /lock` every 10 s (5 to
   300), and 1.5, 4, 8 and 11 s after each command. Answers are read up to 256 KB.
   Errors back off 10 s, 30 s, 1, 2 then 5 minutes; a refused token (401) or
-  token mode (403)
+  a 403 on a read (assumed: token mode)
   is tried again every 5 minutes (a clock drift heals) or at once with the
   test button; a 429 pauses every path for Retry-After, between 60 s and 6 h.
 - **No callbacks**: the bridge can POST its events to a URL (`/callback`), but

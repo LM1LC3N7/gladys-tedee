@@ -333,13 +333,16 @@ test('opening the door always needs both options; a locked door gets mode 4', as
 });
 
 test('opening an unlocked door pulls only; no pull spring, refused', async (t) => {
-  const { gladys, bridge, app } = await setup(t, {
+  const { gladys, bridge, app, clock } = await setup(t, {
     config: { allow_pull: true, allow_unlock: true },
   });
   bridge.lock(IDS.pro).state = 2;
   let ack = await set(gladys, IDS.pro, 'pull', 1);
   assert.equal(ack.success, true, ack.error);
   assert.deepEqual(commandPaths(bridge), [`/v1.0/lock/${IDS.pro}/pull`]);
+  // No pull seen by a read: the guard holds until it expires.
+  assert.match((await set(gladys, IDS.pro, 'pull', 1)).error, /mouvement est en cours/);
+  clock.offset += 10_500;
   // The pull spring turned off in the app since the device was created.
   bridge.lock(IDS.pro).deviceSettings.pullSpringEnabled = 0;
   bridge.lock(IDS.pro).state = 2;
@@ -372,13 +375,81 @@ test('HTTP 405 and 406 on a command have their own messages', async (t) => {
   assert.match((await set(gladys, IDS.go, 'lock', 1)).error, /Erreur Bluetooth/);
 });
 
-test('403: the token mode is refused, not the token', async (t) => {
-  const { gladys, bridge, app } = await setup(t);
+test('403 on a read: probably the token mode; on an unlock: the unlock mode', async (t) => {
+  const { gladys, bridge, app } = await setup(t, { config: { allow_unlock: true } });
+  bridge.hook = (r) => (r.method === 'POST' ? { status: 403, body: {} } : undefined);
+  const ack = await set(gladys, IDS.pro, 'lock', 0);
+  assert.match(ack.error, /mode de déverrouillage \(HTTP 403\)/);
   bridge.hook = () => ({ status: 403, body: {} });
   await app.refresh();
   assert.equal(gladys.fake.connectionStatus.connected, false);
-  assert.match(gladys.fake.connectionStatus.message.en, /refused the token mode \(HTTP 403\)/);
+  assert.match(gladys.fake.connectionStatus.message.en, /answered HTTP 403: probably a token mode/);
   assert.match(gladys.fake.connectionStatus.message.fr, /activé = Haché, désactivé = Simple/);
+});
+
+test('race: pull then lock while the state is unchanged, the lock is refused', async (t) => {
+  const { gladys, bridge } = await setup(t, {
+    config: { allow_unlock: true, allow_pull: true },
+    bridgeOptions: { effect: 'none' },
+  });
+  bridge.lock(IDS.pro).state = 2;
+  const [a, b] = await Promise.all([
+    set(gladys, IDS.pro, 'pull', 1),
+    set(gladys, IDS.pro, 'lock', 1),
+  ]);
+  assert.equal(a.success, true, a.error);
+  assert.equal(b.success, false);
+  assert.match(b.error, /mouvement est en cours/);
+  assert.deepEqual(commandPaths(bridge), [`/v1.0/lock/${IDS.pro}/pull`]);
+});
+
+test('race: pull then pull, the second is refused', async (t) => {
+  const { gladys, bridge } = await setup(t, {
+    config: { allow_unlock: true, allow_pull: true },
+    bridgeOptions: { effect: 'none' },
+  });
+  bridge.lock(IDS.pro).state = 2;
+  const [a, b] = await Promise.all([
+    set(gladys, IDS.pro, 'pull', 1),
+    set(gladys, IDS.pro, 'pull', 1),
+  ]);
+  assert.equal(a.success, true, a.error);
+  assert.equal(b.success, false);
+  assert.match(b.error, /mouvement est en cours/);
+  assert.equal(bridge.commands().length, 1);
+});
+
+test('a pull guard ends only once the pull was seen: PULLING, then UNLOCKED', async (t) => {
+  const { gladys, bridge, app } = await setup(t, {
+    config: { allow_unlock: true, allow_pull: true },
+    bridgeOptions: { effect: 'none' },
+  });
+  bridge.lock(IDS.pro).state = 2;
+  assert.equal((await set(gladys, IDS.pro, 'pull', 1)).success, true);
+  // Unlocked again, but no pull seen yet: still guarded.
+  await app.refresh();
+  assert.equal(app.guards.size, 1);
+  assert.equal(last(gladys, IDS.pro, 'state'), 2);
+  bridge.lock(IDS.pro).state = 8;
+  await app.refresh();
+  assert.equal(app.guards.size, 1);
+  bridge.lock(IDS.pro).state = 2;
+  await app.refresh();
+  assert.equal(app.guards.size, 0);
+  assert.equal(last(gladys, IDS.pro, 'state'), 0);
+});
+
+test('a jam already there before the command does not end the guard', async (t) => {
+  const { gladys, bridge, app } = await setup(t, { bridgeOptions: { effect: 'none' } });
+  Object.assign(bridge.lock(IDS.go), { state: 2, jammed: 1 });
+  assert.equal((await set(gladys, IDS.go, 'lock', 1)).success, true);
+  await app.refresh();
+  assert.equal(app.guards.size, 1, 'the old jam is not the end');
+  bridge.lock(IDS.go).state = 5;
+  await app.refresh();
+  bridge.lock(IDS.go).state = 2;
+  await app.refresh();
+  assert.equal(app.guards.size, 0, 'a jam after a movement ends it');
 });
 
 test('a refused token alone does not refuse a command', async (t) => {

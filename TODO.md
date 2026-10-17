@@ -61,7 +61,15 @@ up to date at the end of every milestone.
   request at a time (single queue, commands first) but does not space them by
   1 s: a command is a read then a POST back to back, and the follow-up reads
   may meet a poll. Watch for errors on a real bridge; spacing would cost up to
-  1 s per command inside the 3.5 s deadline.
+  1 s per command inside the 3.5 s deadline. Possible middle way, to decide
+  on a real bridge: a gap of ~1 s before the low-priority requests only
+  (polling, follow-up reads, test button, scan), the commands staying
+  immediate.
+- A 403 on a read: not documented; assumed a token mode mismatch (the status
+  message says "probably"). A 403 on `/unlock` is the unlock mode refused
+  (v1.19).
+- How a pull shows in the reads (PULLING, PULLED, UNPULLING) and for how long:
+  a pull guard waits for one of them, else expires after 10 s.
 - `battery/charging`: accepted by the Gladys core since v5.0.0 (per the
   review); the manifest asks for 5.1.0 anyway.
 
@@ -109,8 +117,14 @@ up to date at the end of every milestone.
   acted); holds the expected end state (locked, or unlocked for unlock and
   pull) and expires after 10 s. While it holds, every command of the lock is
   refused ("movement in progress", never "already done"), and any read (a
-  poll that was in flight included) shows the lock moving; only a read showing
-  the expected end state or a jam lifts it, never an unknown state.
+  poll that was in flight included) shows the lock moving. It keeps the start
+  state (`from`) and whether a movement / a pull was seen since. It ends on a
+  jam (a jam already there before the command only after a movement), or on
+  the expected end state when it differs from the start state or a movement
+  was seen; for a command that pulls (pull button, mode 4, unlock with the
+  auto pull spring), on the expected end state only after PULLING, PULLED or
+  UNPULLING was seen (from UNLOCKED the end state is the start state),
+  otherwise at the 10 s expiry. Never on an unknown state (approval fix).
 - **Deadline**: Gladys acks set_value after 5 s. The read starts by 3.2 s
   after the arrival, the POST by 3.5 s (checked when it leaves the queue);
   the POST may last until 4.6 s after the arrival, 1.2 s at least. A

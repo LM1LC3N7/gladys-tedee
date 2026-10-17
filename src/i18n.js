@@ -164,8 +164,13 @@ export const T = {
     en: 'Bluetooth error between the bridge and the lock (HTTP 406): command not executed. Try again.',
     fr: 'Erreur Bluetooth entre le bridge et la serrure (HTTP 406) : commande non exécutée. Réessayez.',
   },
+  unlockModeRefused: {
+    en: 'The bridge refused the unlock mode (HTTP 403): the lock did not unlock.',
+    fr: "Le bridge a refusé le mode de déverrouillage (HTTP 403) : la serrure ne s'est pas déverrouillée.",
+  },
+  // A 403 on a read: not documented for the reads, the token mode is the likely cause.
   badMode: (wait) => ({
-    en: `The bridge refused the token mode (HTTP 403): check the "Encrypted token" switch of the Tedee app (on = Hashed, off = Plain). Next try in ${wait}.`,
-    fr: `Le bridge a refusé le mode du jeton (HTTP 403) : vérifiez l'interrupteur « Encrypted token » de l'application Tedee (activé = Haché, désactivé = Simple). Prochain essai dans ${wait}.`,
+    en: `The bridge answered HTTP 403: probably a token mode that does not match the "Encrypted token" switch of the Tedee app (on = Hashed, off = Plain). Next try in ${wait}.`,
+    fr: `Le bridge a répondu HTTP 403 : probablement un mode de jeton qui ne correspond pas à l'interrupteur « Encrypted token » de l'application Tedee (activé = Haché, désactivé = Simple). Prochain essai dans ${wait}.`,
   }),
 };
