@@ -109,7 +109,7 @@ export function buildDevices(gladys, devices, language) {
   });
 }
 
-/** Gladys LOCK.BINARY: 1 locked, 0 unlocked (half-locked and pulled too), else none. */
+/** Gladys LOCK.BINARY: 1 locked, 0 unlocked (half-locked too); none while moving (pulled too) or unknown. */
 export function lockBinary(device) {
   if (!device.connected) {
     return undefined;
@@ -123,7 +123,6 @@ export function lockBinary(device) {
       return GLADYS.LOCK_BINARY.LOCKED;
     case LOCK_STATE.UNLOCKED:
     case LOCK_STATE.HALF_OPEN:
-    case LOCK_STATE.PULLED:
       return GLADYS.LOCK_BINARY.UNLOCKED;
     default:
       return undefined;
@@ -146,7 +145,6 @@ export function lockState(device) {
       return GLADYS.LOCK_STATE.LOCKED;
     case LOCK_STATE.UNLOCKED:
     case LOCK_STATE.HALF_OPEN:
-    case LOCK_STATE.PULLED:
       return GLADYS.LOCK_STATE.UNLOCKED;
     default:
       return undefined;

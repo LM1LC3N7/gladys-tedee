@@ -66,16 +66,68 @@ test('commands: lock, unlock with its mode, pull', async (t) => {
       [`/v1.0/lock/${IDS.go}/pull`, {}],
     ],
   );
+  assert.equal(bridge.commands()[1].modeHeader, '3', 'the mode header of the v1.19 spec');
 });
 
-test('a wrong token is "refused", and the error never shows it', async (t) => {
-  const { client } = await setup(t, { token: 'wrong-token' });
+test('a wrong token is "refused" after two tries, and the error never shows it', async (t) => {
+  const { bridge, client } = await setup(t, { token: 'wrong-token' });
   await assert.rejects(client.getLocks(), (err) => {
     assert.equal(err.kind, 'refused');
     assert.equal(err.status, 401);
     assert.ok(!err.message.includes('wrong-token'));
     return true;
   });
+  assert.equal(bridge.requests.length, 2);
+});
+
+test('a 401 is tried again once, with a new and higher timestamp', async (t) => {
+  const { bridge, client } = await setup(t);
+  let first = true;
+  bridge.hook = () => {
+    if (first) {
+      first = false;
+      return { status: 401, body: {} };
+    }
+    return undefined;
+  };
+  assert.equal((await client.getLocks()).length, 4);
+  const stamps = bridge.requests.map((r) => Number(r.apiToken.slice(64)));
+  assert.equal(stamps.length, 2);
+  assert.ok(stamps[1] > stamps[0]);
+});
+
+test('timestamps strictly increase, even within the same millisecond', () => {
+  const client = new BridgeClient({ now: () => 1_000 });
+  assert.deepEqual([client.stamp(), client.stamp(), client.stamp()], [1_000, 1_001, 1_002]);
+});
+
+test('one request at a time, the commands first; a late one is not sent', async (t) => {
+  const { bridge, client } = await setup(t);
+  bridge.hook = (r) => (r.path === '/v1.0/bridge' ? { delay: 200 } : undefined);
+  let active = 0;
+  let most = 0;
+  const original = client.once.bind(client);
+  client.once = async (...args) => {
+    active += 1;
+    most = Math.max(most, active);
+    try {
+      return await original(...args);
+    } finally {
+      active -= 1;
+    }
+  };
+  const slow = client.getBridge();
+  const poll = client.getLocks();
+  const command = client.lock(IDS.go, { priority: 'high' });
+  const late = assert.rejects(client.lock(IDS.go, { priority: 'high', startBy: Date.now() + 50 }), {
+    kind: 'late',
+  });
+  await Promise.all([slow, poll, command, late]);
+  assert.equal(most, 1);
+  assert.deepEqual(
+    bridge.requests.map((r) => r.path),
+    ['/v1.0/bridge', `/v1.0/lock/${IDS.go}/lock`, '/v1.0/lock'],
+  );
 });
 
 test('HTTP errors have a kind; 429 carries Retry-After', async (t) => {
@@ -83,6 +135,9 @@ test('HTTP errors have a kind; 429 carries Retry-After', async (t) => {
   const cases = [
     [{ status: 429, body: {}, headers: { 'retry-after': '90' } }, 'rate_limited'],
     [{ status: 503, body: {} }, 'unavailable'],
+    [{ status: 403, body: {} }, 'mode'],
+    [{ status: 405, body: {} }, 'disconnected'],
+    [{ status: 406, body: {} }, 'ble'],
     [{ status: 404, body: {} }, 'not_found'],
     [{ status: 409, body: {} }, 'conflict'],
     [{ status: 400, body: {} }, 'rejected'],

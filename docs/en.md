@@ -19,7 +19,7 @@ For each lock:
 | Lock                        | Command: 1 locks, 0 unlocks (when allowed). Shows 1 locked, 0 unlocked or half-locked.                                    |
 | Lock state                  | 0 unlocked, 1 locked, 2 moving, 3 error (jammed or not calibrated).                                                       |
 | Status                      | Text: locked, unlocked, half-locked, latch pulled, moving, jammed, not calibrated, updating, not connected to the bridge. |
-| Open the door (pull spring) | Button, only when the pull spring is on in the Tedee app (when allowed).                                                  |
+| Open the door (pull spring) | Button, only when the pull spring is on in the Tedee app (when both options are allowed).                                 |
 | Door                        | Opening sensor, only when a Tedee Door Sensor is paired.                                                                  |
 | Battery                     | In %.                                                                                                                     |
 | Charging                    | Tedee PRO only (rechargeable battery).                                                                                    |
@@ -34,9 +34,9 @@ API does not document keypads, this is not verified.
 ## Setup
 
 1. In the Tedee app, open the bridge, then **Settings > Local API** (Bridge
-   API), turn it on and note the **token** and the token **mode** (hashed /
-   "encrypted" or plain). The bridge firmware must be recent enough to offer
-   the local API.
+   API), turn it on and note the **token** and the **Encrypted token** switch
+   (on = **Hashed** mode, off = **Plain** mode). The bridge firmware must be
+   recent enough to offer the local API.
 2. Give the bridge a fixed IP address in your router (DHCP reservation).
 3. In Gladys, install the Tedee integration and enter the **IP address of the
    bridge**, the **API token** and the **token mode**.
@@ -48,14 +48,23 @@ API does not document keypads, this is not verified.
 - **Locking is always possible.**
 - **Unlocking** is off by default: turn on **Allow unlocking the locks from
   Gladys** to allow it (scenes, dashboard, voice assistants).
-- **Opening the door (pull spring)** is off by default: turn on **Allow
-  opening the door**. Opening a locked door also unlocks it: both options are
-  needed then.
+- **Opening the door (pull spring)** is off by default and **always needs both
+  options**: **Allow unlocking** and **Allow opening the door**, whatever the
+  state of the lock. On a locked lock, the button sends "unlock or pull"
+  (mode 4): the lock unlocks, and pulls the latch only when the automatic pull
+  spring is on in the Tedee app; Gladys then shows "Unlocking…".
+- When the **automatic pull spring** is on in the Tedee app, unlocking also
+  opens the door: unlocking is then refused until the option to open the door
+  is on.
 - Before each command, the integration **reads the lock again** on the
   bridge. The command is refused when that read fails, when the lock is not
-  connected to the bridge, when it moves, or when its state is unknown (not
-  calibrated, updating).
-- The commands of one lock run **one at a time**.
+  connected to the bridge, when it moves (latch pulled included), or when its
+  state is unknown (not calibrated, updating).
+- The commands of one lock run **one at a time**, and one request at a time
+  goes to the bridge (the commands before the reads).
+- After a command, any new command of the same lock is refused ("movement in
+  progress") until the bridge shows the expected state (or a jammed lock), for
+  10 seconds at most; the lock shows as moving meanwhile.
 - A command that cannot be sent within **3.5 seconds** of its arrival is
   refused: Gladys shows a failure after 5 seconds, and nothing must move after
   that failure.
@@ -83,9 +92,13 @@ the bridge instead.
 
 ## Errors
 
-- **Token refused**: check the token and the mode; in hashed mode, the clock
-  of the Gladys host. Tried again every 5 minutes, or at once with **Test the
-  connection**.
+- **Token refused** (401, after a second try with a new time): check the
+  token; in hashed mode, the clock of the Gladys host. Tried again every 5
+  minutes, or at once with **Test the connection**.
+- **Token mode refused** (403): the mode does not match the "Encrypted token"
+  switch of the app.
+- **Lock disconnected** (405) and **Bluetooth error** between the bridge and
+  the lock (406): the command is not executed, a message says so.
 - **Bridge unreachable**: tried again after 10 s, 30 s, 1 min, 2 min, then
   every 5 minutes.
 - **The bridge asks to slow down** (429): a pause of at least 1 minute (at

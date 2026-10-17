@@ -28,8 +28,9 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (TedeeApp) ⇄ src/bridge.js �
   milliseconds; in plain mode, the token. The token is a `secret` field, never
   logged.
 - **Reading**: `GET /bridge` once per start, then `GET /lock` every 10 s (5 to
-  300), and 1.5, 4 and 8 s after each command. Answers are read up to 256 KB.
-  Errors back off 10 s, 30 s, 1, 2 then 5 minutes; a refused token (401/403)
+  300), and 1.5, 4, 8 and 11 s after each command. Answers are read up to 256 KB.
+  Errors back off 10 s, 30 s, 1, 2 then 5 minutes; a refused token (401) or
+  token mode (403)
   is tried again every 5 minutes (a clock drift heals) or at once with the
   test button; a 429 pauses every path for Retry-After, between 60 s and 6 h.
 - **No callbacks**: the bridge can POST its events to a URL (`/callback`), but
@@ -40,12 +41,17 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (TedeeApp) ⇄ src/bridge.js �
   locked, 2 moving, 3 error), `status` (text), `pull` (button/push, when the
   pull spring is on), `door` (opening-sensor, when a door sensor is paired),
   `battery`, `charging` (PRO). Keypads, if listed: battery only.
-- **Commands** (one chain per lock): refused without `allow_unlock` (unlock) or
-  `allow_pull` (pull; a locked door needs both), then `GET /lock/{id}` just
-  before acting, refused when that read fails, or the lock is offline, moving
-  or in an unknown state, or when the command is not sent within 3.5 s of its
-  arrival. `POST /lock/{id}/lock`, `/unlock?mode=3` (no auto pull),
-  `/unlock?mode=4` (unlock and pull) or `/pull`, with a 1.2 s timeout.
+- **Commands** (one chain per lock, one request at a time to the bridge,
+  commands first): unlock needs `allow_unlock` (and `allow_pull` when the
+  automatic pull spring is on); pull always needs both. `GET /lock/{id}` just
+  before acting; refused when that read fails, or the lock is offline, moving
+  (pulled included) or in an unknown state, or when the command is not sent
+  within 3.5 s of its arrival. `POST /lock/{id}/lock`, `/unlock` with the mode
+  in the `mode` header and the query (3: no auto pull; 4: unlock or pull) or
+  `/pull`, answered by 4.6 s after the arrival (1.2 s at least). After a
+  command (or a maybe-sent one), a guard per lock refuses any command and shows
+  the lock moving until a read shows the expected end state or a jam, 10 s at
+  most. A 401 is tried once more with a new, strictly higher timestamp.
 
 ## Development
 

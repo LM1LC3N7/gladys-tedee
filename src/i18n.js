@@ -100,12 +100,16 @@ export const T = {
       fr: "Le déverrouillage depuis Gladys est désactivé : autorisez-le dans la configuration de l'intégration Tedee.",
     },
     pull: {
-      en: 'Opening the door from Gladys is off: allow it in the configuration of the Tedee integration.',
-      fr: "L'ouverture de la porte depuis Gladys est désactivée : autorisez-la dans la configuration de l'intégration Tedee.",
+      en: 'Opening the door from Gladys is off: it needs both the unlocking and the opening options in the configuration of the Tedee integration.',
+      fr: "L'ouverture de la porte depuis Gladys est désactivée : elle demande les deux options, déverrouillage et ouverture, dans la configuration de l'intégration Tedee.",
     },
-    pullLocked: {
-      en: 'The lock is locked: opening it also unlocks it, which needs the unlocking option too.',
-      fr: "La serrure est verrouillée : l'ouvrir la déverrouille aussi, ce qui demande aussi l'option de déverrouillage.",
+    autoPull: {
+      en: 'Unlocking refused: the automatic pull spring is on for this lock in the Tedee app, so unlocking would also open the door. Allow opening the door in the configuration, or turn the automatic pull spring off.',
+      fr: "Déverrouillage refusé : le pull spring automatique est activé pour cette serrure dans l'application Tedee, déverrouiller ouvrirait donc aussi la porte. Autorisez l'ouverture de la porte dans la configuration, ou désactivez le pull spring automatique.",
+    },
+    inProgress: {
+      en: 'Command refused: a movement is in progress after the previous command.',
+      fr: 'Commande refusée : un mouvement est en cours après la commande précédente.',
     },
     pullSpring: {
       en: 'The pull spring is off for this lock in the Tedee app.',
@@ -135,10 +139,6 @@ export const T = {
       en: 'Command refused: the bridge asked to slow down, try again later.',
       fr: 'Commande refusée : le bridge a demandé de ralentir, réessayez plus tard.',
     },
-    refused: {
-      en: 'Command refused: the bridge refuses the API token.',
-      fr: "Commande refusée : le bridge refuse le jeton d'API.",
-    },
     noConfig: {
       en: 'Command refused: the integration is not configured.',
       fr: "Commande refusée : l'intégration n'est pas configurée.",
@@ -155,5 +155,17 @@ export const T = {
   commandFailed: (reason) => ({
     en: `The bridge refused the command (${reason}).`,
     fr: `Le bridge a refusé la commande (${reason}).`,
+  }),
+  lockDisconnected: {
+    en: 'The bridge says the lock is not connected (HTTP 405): command not sent.',
+    fr: "Le bridge indique que la serrure n'est pas connectée (HTTP 405) : commande non envoyée.",
+  },
+  bleError: {
+    en: 'Bluetooth error between the bridge and the lock (HTTP 406): command not executed. Try again.',
+    fr: 'Erreur Bluetooth entre le bridge et la serrure (HTTP 406) : commande non exécutée. Réessayez.',
+  },
+  badMode: (wait) => ({
+    en: `The bridge refused the token mode (HTTP 403): check the "Encrypted token" switch of the Tedee app (on = Hashed, off = Plain). Next try in ${wait}.`,
+    fr: `Le bridge a refusé le mode du jeton (HTTP 403) : vérifiez l'interrupteur « Encrypted token » de l'application Tedee (activé = Haché, désactivé = Simple). Prochain essai dans ${wait}.`,
   }),
 };

@@ -29,7 +29,8 @@ export function checkToken(header, { token, mode, now = Date.now(), skew = 30_00
 
 /**
  * Options: `token`, `mode` ('hashed' | 'plain'), `effect` ('final': a command
- * puts the lock in its final state at once; 'moving': in its moving state).
+ * puts the lock in its final state at once; 'moving': in its moving state;
+ * 'none': answered 204, the state unchanged for now).
  * `hook(req)` may return `{ status, body, headers, delay }` to answer instead,
  * or run code (a clock jump) before the normal answer.
  */
@@ -62,6 +63,7 @@ export async function startFakeBridge({ token = TOKEN, mode = 'hashed', effect =
       path: url.pathname,
       query: Object.fromEntries(url.searchParams),
       apiToken: req.headers.api_token,
+      modeHeader: req.headers.mode,
     };
     bridge.requests.push(entry);
     const custom = bridge.hook ? await bridge.hook(entry) : undefined;
@@ -102,8 +104,13 @@ export async function startFakeBridge({ token = TOKEN, mode = 'hashed', effect =
         return;
       }
       const action = match[2];
-      lock.state = bridge.effect === 'moving' ? MOVING[action] : FINAL[action];
-      send(res, 202, undefined);
+      if (bridge.effect === 'moving') {
+        lock.state = MOVING[action];
+      } else if (bridge.effect === 'final') {
+        lock.state = FINAL[action];
+      }
+      // effect 'none': accepted (204), the state does not change yet.
+      send(res, 204, undefined);
     } else {
       send(res, 404, { error: 'Not found' });
     }

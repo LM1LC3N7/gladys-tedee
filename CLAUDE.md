@@ -51,10 +51,13 @@ THIRD_PARTY_NOTICES.md            MIT notice of aiotedee (ported logic), copied 
 ## Safety rules (locks)
 
 Locking is always allowed. Unlocking (`allow_unlock`) and opening the door
-(`allow_pull`) stay off by default. Commands of one lock are serialized, the
-lock is read again just before acting, and a command is refused when that read
-fails, when the lock is offline, moving or in an unknown state, or when it
-cannot be sent within 3.5 s of its arrival. Never weaken these rules.
+(`allow_pull`) stay off by default; any pull needs both, and so does unlocking
+a lock whose automatic pull spring is on. Commands of one lock are serialized,
+one request at a time goes to the bridge, the lock is read again just before
+acting, and a command is refused when that read fails, when the lock is
+offline, moving or in an unknown state, when it cannot be sent within 3.5 s of
+its arrival, or while the guard of the previous command holds (until the
+expected end state, a jam, or 10 s). Never weaken these rules.
 
 ## Rules
 

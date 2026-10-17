@@ -22,6 +22,13 @@ up to date at the end of every milestone.
       read before acting, refusals on offline/moving/unknown, 3.5 s
       deadline), backoff, 401 retry every 5 min, 429 pause, badges, test
       button, en/fr, docs, cover. Tested against a fake bridge only.
+- [x] **Review fixes** (2026-10-17): guard per lock after each command
+      (refuses every command, keeps the lock shown moving, lifted by the
+      expected end state or a jam, 10 s at most), unlock mode as header and
+      query, auto pull spring check, any pull needs both options, 401 tried
+      twice with increasing timestamps, single request queue (commands
+      first), command answer by 4.6 s, pulled = moving, pull takes 1 only,
+      403/405/406 messages, token mode labels.
 - [ ] **Milestone 2 — real bridge**: run against a real bridge and lock,
       compare with the app (see "To check"); turn the answers (anonymized)
       into fixtures.
@@ -37,20 +44,26 @@ up to date at the end of every milestone.
 
 - The exact shape of `GET /lock` on the local API: `state`, `jammed`,
   `doorState`, `batteryLevel`, `isCharging`, `isConnected` at the top level
-  (as aiotedee reads them), `deviceSettings.pullSpringEnabled`,
-  `serialNumber`. Booleans as 0/1 or true/false (both handled).
-- Whether `GET /lock/{id}` exists on the bridge firmware in use (aiotedee only
-  reads `GET /lock`); if not, the fresh read before a command must read the
-  list instead.
+  (as aiotedee reads them), `deviceSettings.pullSpringEnabled` and
+  `autoPullSpringEnabled`, `serialNumber`. Booleans as 0/1 or true/false (both
+  handled). An absent `autoPullSpringEnabled` is read as off.
+- `GET /lock/{id}`: confirmed by the Bridge API specification v1.19 (per the
+  review); still to see on a real firmware.
+- The `mode` of `POST /lock/{id}/unlock`: a header in the v1.19 specification,
+  a query parameter in aiotedee: both are sent. Check that the bridge accepts
+  both together.
 - The validity window of the hashed token (how much clock drift the bridge
-  accepts) and the answer to a stale one (401?).
-- The status codes of a command on a busy lock (409? 503?) and the body of a
-  `202`.
+  accepts) and the answer to a stale one (401, tried once more here).
+- The answers of a command: 204 (or 202) without body; 405 lock disconnected,
+  406 Bluetooth error, 409 busy?
 - Whether keypads (type 3 / 10) appear in `GET /lock` at all.
-- Rate limits of the bridge: none documented in aiotedee; 10 s polling is the
-  pace of Home Assistant.
-- Whether Gladys 5.1 accepts the `battery/charging` feature type (present in
-  the SDK 0.15 and the current core constants).
+- **Rate limit: 1 request per second, documented.** The integration sends one
+  request at a time (single queue, commands first) but does not space them by
+  1 s: a command is a read then a POST back to back, and the follow-up reads
+  may meet a poll. Watch for errors on a real bridge; spacing would cost up to
+  1 s per command inside the 3.5 s deadline.
+- `battery/charging`: accepted by the Gladys core since v5.0.0 (per the
+  review); the manifest asks for 5.1.0 anyway.
 
 ## Decisions
 
@@ -65,42 +78,59 @@ up to date at the end of every milestone.
 - **Polling, no callbacks**: the manifest can only declare ports for
   sub-containers; the main container is not reachable from the LAN, so the
   bridge cannot call it back. `GET /lock` every 10 s by default (Home
-  Assistant's pace), plus reads 1.5, 4 and 8 s after a command.
+  Assistant's pace), plus reads 1.5, 4, 8 and 11 s after a command.
 - **Token**: `secret` field, kept by Gladys in its database (not encrypted),
-  never logged, sent only to the bridge. Hashed mode by default: only
-  `sha256(token + ms) + ms` travels; plain mode sends it in clear on the LAN
-  (written in the docs). The bridge is plain HTTP (no HTTPS offered).
+  never logged, sent only to the bridge. Hashed mode by default (the
+  "Encrypted token" switch of the app on; off = Plain): only
+  `sha256(token + ms) + ms` travels, with strictly increasing timestamps;
+  plain mode sends it in clear on the LAN (written in the docs). The bridge is
+  plain HTTP (no HTTPS offered).
 - **Bridge address**: an IP address or host name with an optional port only
   (no scheme but `http://`, no path, no user): the URL cannot be bent.
-- **Safety** (Louis's rule): `allow_unlock` and `allow_pull` off by default;
-  opening a locked or half-locked door uses `unlock?mode=4` and needs both;
-  locking always allowed (still refused when offline, moving or unknown).
-  Unlock uses mode 3 (no automatic pull spring), as Home Assistant.
-- **Commands**: a promise chain per lock; `GET /lock/{id}` just before
-  acting (the state in memory is never used); refused when that read fails,
-  when `isConnected` is false, during a movement (calibrating, locking,
-  unlocking, pulling, unpulling) or in an unknown state (uncalibrated,
-  unknown, updating). Already in the asked state: nothing sent, success.
+- **One request at a time** to the bridge: a single queue, the commands (read
+  and POST) before the polling. Polling reads time out after 3 s, so a command
+  never waits long behind one.
+- **Safety** (Louis's rule, and the coordinator's decision of 2026-10-17):
+  `allow_unlock` and `allow_pull` off by default; **any pull needs both**,
+  whatever the state; unlocking a lock whose automatic pull spring is on needs
+  `allow_pull` too (it would open the door). Locking always allowed (still
+  refused when offline, moving, unknown or guarded). Unlock uses mode 3 (no
+  automatic pull spring), as Home Assistant; a pull on a locked or half-locked
+  lock uses mode 4, which only unlocks when the automatic pull spring is off
+  (shown "Unlocking…").
+- **Commands**: a promise chain per lock; `GET /lock/{id}` just before acting
+  (the state in memory is never used); refused when that read fails, when
+  `isConnected` is false, during a movement (calibrating, locking, unlocking,
+  pulled, pulling, unpulling) or in an unknown state (uncalibrated, unknown,
+  updating). Already in the asked state and no guard: nothing sent, success.
   Jammed but still: allowed (a new try is the usual cure).
-- **Deadline**: Gladys acks set_value after 5 s. A command is refused when it
-  starts (after its turn in the chain) with less than 0.3 s left of 3.5 s, or
-  when the fresh read ends after 3.5 s; the command request has a 1.2 s
-  timeout, so the answer comes before 4.7 s. A timed-out command answers "the
-  lock may still move" and is followed by re-reads.
-- **After a command**: shown as moving (lock/state 2) until the next read.
-- **Errors**: 401/403 = refused token, tried again every 5 min by itself (a
-  clock drift can cause it) or at once by the test button; 429 = pause
-  `Retry-After` clamped to 60 s–6 h, applied to polling, scan, test and
-  commands; network, timeout, 5xx, bad answers = backoff 10 s → 5 min.
-  Answers read up to 256 KB, JSON parsed once.
-- **Gladys features**: `lock` lock/binary writable (1 locked, 0 unlocked,
-  half-locked and pulled shown as 0, nothing while moving or unknown);
-  `state` lock/state read-only (LOCK.STATE 0/1/2/3, 3 = jammed or
+- **Guard after a command** (review blocker 1): set after the POST, whether it
+  succeeded, timed out or failed on the network / 5xx (the bridge may have
+  acted); holds the expected end state (locked, or unlocked for unlock and
+  pull) and expires after 10 s. While it holds, every command of the lock is
+  refused ("movement in progress", never "already done"), and any read (a
+  poll that was in flight included) shows the lock moving; only a read showing
+  the expected end state or a jam lifts it, never an unknown state.
+- **Deadline**: Gladys acks set_value after 5 s. The read starts by 3.2 s
+  after the arrival, the POST by 3.5 s (checked when it leaves the queue);
+  the POST may last until 4.6 s after the arrival, 1.2 s at least. A
+  timed-out command answers "the lock may still move", is guarded and
+  followed by re-reads.
+- **Errors**: 401 = refused token, after one more try with a new timestamp;
+  403 = token mode refused; both tried again every 5 min by themselves or at
+  once by the test button, and never refuse a command by themselves (the
+  command tries). 405 = lock disconnected, 406 = Bluetooth error: own
+  messages. 429 = pause `Retry-After` clamped to 60 s–6 h, applied to polling,
+  scan, test and commands; network, timeout, 5xx, bad answers = backoff 10 s
+  → 5 min. Answers read up to 256 KB, JSON parsed once.
+- **Gladys features**: `lock` lock/binary writable (1 locked, 0 unlocked or
+  half-locked, nothing while moving, pulled or unknown); `state` lock/state
+  read-only (LOCK.STATE 0/1/2/3, 2 = moving or pulled, 3 = jammed or
   uncalibrated); `status` text (detailed status, in the configured language);
-  `pull` button/push, only when the pull spring is on at discovery; `door`
-  opening-sensor (1 closed, 0 open), only with a paired door sensor;
-  `battery` %; `charging` battery/charging, PRO only. Feature keys are
-  forever.
+  `pull` button/push (value 1 only), only when the pull spring is on at
+  discovery; `door` opening-sensor (1 closed, 0 open), only with a paired door
+  sensor; `battery` %; `charging` battery/charging, PRO only. Feature keys
+  are forever.
 - **Badges**: `local`; `unreachable` when the bridge fails or refuses;
   `unreachable` + degraded for a lock with `isConnected` false.
 - **Version 0.1.0 set by hand** in `package.json`, `package-lock.json` and the

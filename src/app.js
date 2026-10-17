@@ -5,6 +5,10 @@
 //
 // - locking is always allowed; unlocking (allow_unlock) and opening the door
 //   with the pull spring (allow_pull) are off until the user turns them on;
+//   any pull needs both, and so does unlocking with the auto pull spring on;
+// - after a command (sent or maybe sent), a guard refuses every command of
+//   the lock and shows it moving until a read shows the expected end state or
+//   a jam, 10 s at most;
 // - the commands of one lock run one at a time (a promise chain per lock);
 // - the lock is read again (GET /lock/{id}) just before acting, never decided
 //   on a state in memory; refused when that read fails, or when the lock is
@@ -36,6 +40,9 @@ import { isLocked, isMoving, isStill, parseDevice, parseDevices } from './tedee.
 
 /** Errors meaning the bridge did not answer usefully: every device is unreachable. */
 const OFFLINE = new Set(['network', 'timeout', 'unavailable', 'bad_response', 'size']);
+
+/** Command errors after which the bridge may have executed it anyway. */
+const MAYBE_SENT = new Set(['timeout', 'network', 'unavailable', 'bad_response', 'size']);
 
 /** A refusal shown in the ack of the command (Gladys shows the message). */
 class Refusal extends Error {}
@@ -69,6 +76,12 @@ export class TedeeApp {
     this.pausedUntil = 0;
     /** lockId -> tail of its command chain: one command at a time per lock */
     this.commandChains = new Map();
+    /**
+     * lockId -> { expected, moving, until }: a command was sent (or may have
+     * been). Until a read shows `expected` (or jammed), or `until`, every
+     * command of the lock is refused and the lock is shown `moving`.
+     */
+    this.guards = new Map();
     this.published = undefined;
     /** deviceId -> badge last published (JSON) */
     this.transports = new Map();
@@ -118,6 +131,7 @@ export class TedeeApp {
   /** Forgets the bridge and the failures: new settings, or a restart. */
   reset() {
     this.devices.clear();
+    this.guards.clear();
     this.bridgeInfo = undefined;
     this.readAt = undefined;
     this.refused = false;
@@ -227,7 +241,11 @@ export class TedeeApp {
       if (generation !== this.generation) {
         return;
       }
-      this.devices = parseDevices(list);
+      // A read sent before a command may answer after it: the guards keep
+      // the lock shown moving until the expected end state is read.
+      this.devices = new Map(
+        [...parseDevices(list)].map(([id, device]) => [id, this.observe(device)]),
+      );
       this.readAt = this.now();
       this.failures = 0;
       this.offline = false;
@@ -266,12 +284,15 @@ export class TedeeApp {
   async failed(err) {
     const reason = errorReason(err);
     let wait;
-    if (err.kind === 'refused') {
+    if (err.kind === 'refused' || err.kind === 'mode') {
       // A drifting clock can refuse a hashed token for a while: retried by itself.
       this.refused = true;
       wait = TIMINGS.refusedRetry;
-      this.logger.warn(`The Tedee Bridge refused the API token (${reason})`);
-      await this.setStatus(false, T.refused(age(wait)));
+      this.logger.warn(`The Tedee Bridge refused the API token or its mode (${reason})`);
+      await this.setStatus(
+        false,
+        err.kind === 'mode' ? T.badMode(age(wait)) : T.refused(age(wait)),
+      );
     } else if (err.kind === 'rate_limited') {
       wait = this.pause(err);
       await this.setStatus(this.readAt !== undefined, T.rateLimited(age(wait)));
@@ -422,8 +443,8 @@ export class TedeeApp {
     if (target.role === 'lock' && number !== 0 && number !== 1) {
       throw new Error(`Unexpected value "${value}" (0 or 1)`);
     }
-    if (target.role === 'pull' && !Number.isFinite(number)) {
-      throw new Error(`Unexpected value "${value}"`);
+    if (target.role === 'pull' && number !== 1) {
+      throw new Error(`Unexpected value "${value}" (1)`);
     }
     return this.serialized(target.id, () => this.command(target, number, receivedAt));
   }
@@ -456,12 +477,12 @@ export class TedeeApp {
     if (unlocking && !allowUnlock) {
       throw this.refusal(T.denied.unlock);
     }
-    if (role === 'pull' && !allowPull) {
+    // Opening the door always needs both options, whatever the state.
+    if (role === 'pull' && !(allowPull && allowUnlock)) {
       throw this.refusal(T.denied.pull);
     }
-    if (this.refused) {
-      throw this.refusal(T.denied.refused);
-    }
+    // A refused token alone does not refuse: the command tries itself (and a
+    // 401 is tried twice), the token may have been fixed meanwhile.
     if (this.now() < this.pausedUntil) {
       throw this.refusal(T.denied.paused);
     }
@@ -475,6 +496,10 @@ export class TedeeApp {
 
     // The state just before acting, never the one in memory.
     const lock = await this.readLock(id, receivedAt);
+    if (this.guardActive(id)) {
+      // The previous command may still be moving the lock: never "already done".
+      throw this.refusal(T.denied.inProgress);
+    }
     if (this.remaining(receivedAt) <= 0) {
       throw this.refusal(T.denied.late);
     }
@@ -490,46 +515,67 @@ export class TedeeApp {
 
     let send;
     let moving;
+    let expected = LOCK_STATE.UNLOCKED;
+    const options = {
+      priority: 'high',
+      // Sent 3.5 s after the arrival at the latest; answered by 4.6 s (1.2 s at least).
+      startBy: receivedAt + TIMINGS.commandDeadline,
+      timeout: () =>
+        Math.max(TIMINGS.commandTimeout, receivedAt + TIMINGS.commandAnswerBy - this.now()),
+    };
     if (role === 'lock' && value === 1) {
       if (isLocked(lock)) {
         return;
       }
-      send = () => this.client.lock(id, { timeout: TIMINGS.commandTimeout });
+      send = () => this.client.lock(id, options);
       moving = LOCK_STATE.LOCKING;
+      expected = LOCK_STATE.LOCKED;
     } else if (role === 'lock') {
-      if (lock.state === LOCK_STATE.UNLOCKED || lock.state === LOCK_STATE.PULLED) {
+      if (lock.state === LOCK_STATE.UNLOCKED) {
         return;
       }
-      send = () =>
-        this.client.unlock(id, UNLOCK_MODE.WITHOUT_PULL, { timeout: TIMINGS.commandTimeout });
+      if (lock.autoPullSpring && !allowPull) {
+        // The lock would open the door by itself after unlocking.
+        throw this.refusal(T.denied.autoPull);
+      }
+      send = () => this.client.unlock(id, UNLOCK_MODE.WITHOUT_PULL, options);
       moving = LOCK_STATE.UNLOCKING;
     } else {
       if (!lock.pullSpring) {
         throw this.refusal(T.denied.pullSpring);
       }
       if (lock.state === LOCK_STATE.LOCKED || lock.state === LOCK_STATE.HALF_OPEN) {
-        // Opening a locked door unlocks it first: both options are needed.
-        if (!allowUnlock) {
-          throw this.refusal(T.denied.pullLocked);
-        }
-        send = () =>
-          this.client.unlock(id, UNLOCK_MODE.UNLOCK_OR_PULL, { timeout: TIMINGS.commandTimeout });
+        // Mode 4 unlocks, and pulls only when the auto pull spring is on.
+        send = () => this.client.unlock(id, UNLOCK_MODE.UNLOCK_OR_PULL, options);
+        moving = LOCK_STATE.UNLOCKING;
       } else {
-        send = () => this.client.pull(id, { timeout: TIMINGS.commandTimeout });
+        send = () => this.client.pull(id, options);
+        moving = LOCK_STATE.PULLING;
       }
-      moving = LOCK_STATE.PULLING;
     }
 
     try {
       await send();
     } catch (err) {
-      this.followUp();
+      if (err.kind === 'late') {
+        throw this.refusal(T.denied.late, err);
+      }
       if (err.kind === 'rate_limited') {
         this.pause(err);
       }
-      if (err.kind === 'timeout' || err.kind === 'network') {
+      if (MAYBE_SENT.has(err.kind)) {
         // The request may have reached the bridge: the lock may move anyway.
-        throw new Error(word(T.sentNoAnswer, this.config.language), { cause: err });
+        this.guard(lock, expected, moving);
+        this.followUp();
+        if (err.kind === 'timeout' || err.kind === 'network') {
+          throw new Error(word(T.sentNoAnswer, this.config.language), { cause: err });
+        }
+      }
+      if (err.kind === 'disconnected') {
+        throw new Error(word(T.lockDisconnected, this.config.language), { cause: err });
+      }
+      if (err.kind === 'ble') {
+        throw new Error(word(T.bleError, this.config.language), { cause: err });
       }
       throw new Error(word(T.commandFailed(errorReason(err)), this.config.language), {
         cause: err,
@@ -538,24 +584,62 @@ export class TedeeApp {
     this.logger.info(
       `${deviceName(lock, 'en')}: ${role === 'pull' ? 'pull' : value ? 'lock' : 'unlock'} sent`,
     );
-    // Shown as moving until the bridge reports the end of the movement.
-    const shown = { ...lock, state: moving, jammed: false };
-    this.devices.set(id, shown);
+    this.guard(lock, expected, moving);
+    this.followUp();
+  }
+
+  /** Sets the guard of a lock after a command, and shows it moving. */
+  guard(lock, expected, moving) {
+    this.guards.set(lock.id, { expected, moving, until: this.now() + TIMINGS.commandGuard });
+    const shown = this.observe(lock);
+    this.devices.set(lock.id, shown);
     this.queue(shown);
     this.flush();
-    this.followUp();
+  }
+
+  guardActive(id) {
+    const guard = this.guards.get(id);
+    if (guard && this.now() >= guard.until) {
+      this.guards.delete(id);
+      return false;
+    }
+    return Boolean(guard);
+  }
+
+  /**
+   * A lock as read, through its guard: the guard ends on the expected end
+   * state or on a jam (never on an unknown state), or when it expires;
+   * meanwhile the lock is shown moving.
+   */
+  observe(lock) {
+    if (!this.guardActive(lock.id)) {
+      return lock;
+    }
+    const guard = this.guards.get(lock.id);
+    if (lock.connected && (lock.jammed || lock.state === guard.expected)) {
+      this.guards.delete(lock.id);
+      return lock;
+    }
+    return { ...lock, state: guard.moving, jammed: false };
   }
 
   /** GET /lock/{id} within the command deadline; refused on any failure. */
   async readLock(id, receivedAt) {
-    const timeout = Math.max(
-      TIMINGS.minRequestTimeout,
-      Math.min(TIMINGS.requestTimeout, this.remaining(receivedAt)),
-    );
     let raw;
     try {
-      raw = await this.client.getLock(id, { timeout });
+      raw = await this.client.getLock(id, {
+        priority: 'high',
+        startBy: receivedAt + TIMINGS.commandDeadline - TIMINGS.minRequestTimeout,
+        timeout: () =>
+          Math.max(
+            TIMINGS.minRequestTimeout,
+            Math.min(TIMINGS.requestTimeout, this.remaining(receivedAt)),
+          ),
+      });
     } catch (err) {
+      if (err.kind === 'late') {
+        throw this.refusal(T.denied.late, err);
+      }
       if (err.kind === 'rate_limited') {
         this.pause(err);
       }
@@ -566,8 +650,9 @@ export class TedeeApp {
     if (!lock || lock.id !== id || lock.kind !== 'lock') {
       throw this.refusal(T.denied.unreadable, new BridgeError('bad_response', 'not this lock'));
     }
-    this.devices.set(id, lock);
-    this.queue(lock);
+    const shown = this.observe(lock);
+    this.devices.set(id, shown);
+    this.queue(shown);
     this.flush();
     return lock;
   }

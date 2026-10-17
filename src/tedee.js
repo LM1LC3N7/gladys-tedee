@@ -82,6 +82,9 @@ export function parseDevice(raw) {
     battery: battery !== undefined && battery >= 0 && battery <= 100 ? battery : undefined,
     charging: raw.isCharging === true || intOf(raw.isCharging) === 1,
     pullSpring: settings.pullSpringEnabled === true || intOf(settings.pullSpringEnabled) === 1,
+    // Unlocking then also pulls the latch: the door opens.
+    autoPullSpring:
+      settings.autoPullSpringEnabled === true || intOf(settings.autoPullSpringEnabled) === 1,
   };
 }
 

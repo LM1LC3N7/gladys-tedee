@@ -4,13 +4,20 @@
 // Bridge API documentation (docs.tedee.com/bridge-api).
 //
 // - Plain HTTP on the LAN (the bridge serves no HTTPS), port 80 by default.
-// - Authentication: the `api_token` header. "Hashed" mode (the default of the
-//   Tedee app): SHA-256(token + timestamp in ms) as hex, followed by the same
-//   timestamp; the token itself never travels. "Plain" mode: the token as is.
+// - Authentication: the `api_token` header. "Hashed" mode (the "Encrypted
+//   token" switch of the Tedee app on): SHA-256(token + timestamp in ms) as
+//   hex, followed by the same timestamp; the token itself never travels.
+//   Timestamps strictly increase from one request to the next. "Plain" mode:
+//   the token as is.
+// - One request at a time to the bridge (a single queue), the commands of the
+//   locks before the polling.
+// - A 401 is tried once more with a new timestamp before it counts.
 // - Every answer is read up to LIMITS.responseBytes, with a timeout.
-// - Errors carry a `kind`: refused (401/403), rate_limited (429, with
-//   `retryAfter` in ms), unavailable (5xx), not_found (404), conflict (409),
-//   rejected (other 4xx), network, timeout, bad_response, size.
+// - Errors carry a `kind`: refused (401), mode (403: the token mode does not
+//   match), disconnected (405: lock not connected), ble (406: Bluetooth error
+//   between bridge and lock), rate_limited (429, with `retryAfter` in ms),
+//   unavailable (5xx), not_found (404), conflict (409), rejected (other 4xx),
+//   network, timeout, bad_response, size, late (not started in time).
 // The token never appears in an error or a log line.
 // -----------------------------------------------------------------------------
 
@@ -27,7 +34,7 @@ export class BridgeError extends Error {
   }
 }
 
-/** The `api_token` header value. `ms`: the current time in milliseconds. */
+/** The `api_token` header value. `ms`: the timestamp in milliseconds. */
 export function authToken(token, mode, ms) {
   if (mode === 'plain') {
     return token;
@@ -49,23 +56,18 @@ export function retryAfterMs(header, now) {
   return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
 }
 
+const STATUS_KINDS = {
+  401: 'refused',
+  403: 'mode',
+  404: 'not_found',
+  405: 'disconnected',
+  406: 'ble',
+  409: 'conflict',
+  429: 'rate_limited',
+};
+
 function kindOfStatus(status) {
-  if (status === 401 || status === 403) {
-    return 'refused';
-  }
-  if (status === 429) {
-    return 'rate_limited';
-  }
-  if (status === 404) {
-    return 'not_found';
-  }
-  if (status === 409) {
-    return 'conflict';
-  }
-  if (status >= 500) {
-    return 'unavailable';
-  }
-  return 'rejected';
+  return STATUS_KINDS[status] ?? (status >= 500 ? 'unavailable' : 'rejected');
 }
 
 /** Reads a body up to `limit` bytes; beyond, the stream is cancelled. */
@@ -99,6 +101,10 @@ export class BridgeClient {
     this.bridge = undefined;
     this.token = '';
     this.mode = 'hashed';
+    this.lastStamp = 0;
+    /** Waiting requests: the commands first. */
+    this.waiting = { high: [], low: [] };
+    this.busy = false;
   }
 
   configure({ bridge, token, mode }) {
@@ -115,14 +121,71 @@ export class BridgeClient {
     return `http://${this.bridge.host}:${this.bridge.port}/${API.version}`;
   }
 
-  /**
-   * One request. `timeout` bounds the whole request, body included. Resolves
-   * the parsed JSON (null for an empty body).
-   */
-  async request(method, path, { timeout = TIMINGS.requestTimeout } = {}) {
-    if (!this.configured) {
-      throw new BridgeError('no_config', 'bridge address or token missing');
+  /** A timestamp strictly above the previous one. */
+  stamp() {
+    this.lastStamp = Math.max(Math.trunc(this.now()), this.lastStamp + 1);
+    return this.lastStamp;
+  }
+
+  /** Runs `job` when the bridge is free, high priority first. */
+  enqueue(job, priority) {
+    return new Promise((resolve, reject) => {
+      this.waiting[priority === 'high' ? 'high' : 'low'].push({ job, resolve, reject });
+      this.pump();
+    });
+  }
+
+  pump() {
+    if (this.busy) {
+      return;
     }
+    const next = this.waiting.high.shift() ?? this.waiting.low.shift();
+    if (!next) {
+      return;
+    }
+    this.busy = true;
+    Promise.resolve()
+      .then(next.job)
+      .then(next.resolve, next.reject)
+      .finally(() => {
+        this.busy = false;
+        this.pump();
+      });
+  }
+
+  /**
+   * One request, queued. Options:
+   * - `timeout`: ms, or a function giving the ms when the request starts;
+   * - `startBy`: the request is not sent after this time (kind "late");
+   * - `priority`: 'high' for the commands, 'low' (default) for the polling;
+   * - `headers`: extra headers.
+   * Resolves the parsed JSON (null for an empty body).
+   */
+  request(method, path, options = {}) {
+    if (!this.configured) {
+      return Promise.reject(new BridgeError('no_config', 'bridge address or token missing'));
+    }
+    return this.enqueue(() => this.perform(method, path, options), options.priority);
+  }
+
+  async perform(method, path, { timeout = TIMINGS.requestTimeout, startBy, headers } = {}) {
+    for (let attempt = 1; ; attempt += 1) {
+      if (startBy !== undefined && this.now() > startBy) {
+        throw new BridgeError('late', 'not sent in time');
+      }
+      const ms = typeof timeout === 'function' ? timeout() : timeout;
+      try {
+        return await this.once(method, path, ms, headers);
+      } catch (err) {
+        // A hashed token may be refused for its timestamp: one more try with a new one.
+        if (err.kind !== 'refused' || attempt >= 2) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  async once(method, path, timeout, headers = {}) {
     const controller = new AbortController();
     let timedOut = false;
     // Our own (ref'd) timer, not AbortSignal.timeout: an unref'd one lets a
@@ -138,7 +201,8 @@ export class BridgeClient {
           method,
           headers: {
             accept: 'application/json',
-            api_token: authToken(this.token, this.mode, this.now()),
+            ...headers,
+            api_token: authToken(this.token, this.mode, this.stamp()),
           },
           signal: controller.signal,
           redirect: 'error',
@@ -214,13 +278,16 @@ export class BridgeClient {
     return this.request('POST', `/lock/${encodeURIComponent(id)}/lock`, options);
   }
 
-  /** POST /lock/{id}/unlock?mode= */
-  unlock(id, mode, options) {
-    return this.request(
-      'POST',
-      `/lock/${encodeURIComponent(id)}/unlock?mode=${Number(mode)}`,
-      options,
-    );
+  /**
+   * POST /lock/{id}/unlock: the mode both as the `mode` header (Bridge API
+   * v1.19 specification) and in the query (what aiotedee sends).
+   */
+  unlock(id, mode, options = {}) {
+    const value = String(Number(mode));
+    return this.request('POST', `/lock/${encodeURIComponent(id)}/unlock?mode=${value}`, {
+      ...options,
+      headers: { ...options.headers, mode: value },
+    });
   }
 
   /** POST /lock/{id}/pull */

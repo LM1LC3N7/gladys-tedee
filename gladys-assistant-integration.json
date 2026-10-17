@@ -75,8 +75,8 @@
         "fr": "Mode du jeton"
       },
       "description": {
-        "en": "As set in the Tedee app. Hashed: the token never travels on the network (needs the clock of the Gladys host on time). Plain: the token travels in clear on the local network.",
-        "fr": "Comme réglé dans l'application Tedee. Haché : le jeton ne circule jamais sur le réseau (l'horloge de la machine Gladys doit être à l'heure). Simple : le jeton circule en clair sur le réseau local."
+        "en": "As the \"Encrypted token\" switch of the Tedee app: on = Hashed, off = Plain. Hashed: the token never travels on the network (needs the clock of the Gladys host on time). Plain: the token travels in clear on the local network.",
+        "fr": "Comme l'interrupteur « Encrypted token » de l'application Tedee : activé = Haché, désactivé = Simple. Haché : le jeton ne circule jamais sur le réseau (l'horloge de la machine Gladys doit être à l'heure). Simple : le jeton circule en clair sur le réseau local."
       },
       "required": false,
       "default": "hashed",
@@ -84,15 +84,15 @@
         {
           "value": "hashed",
           "label": {
-            "en": "Hashed (recommended)",
-            "fr": "Haché (recommandé)"
+            "en": "Hashed: \"Encrypted token\" on (recommended)",
+            "fr": "Haché : « Encrypted token » activé (recommandé)"
           }
         },
         {
           "value": "plain",
           "label": {
-            "en": "Plain",
-            "fr": "Simple"
+            "en": "Plain: \"Encrypted token\" off",
+            "fr": "Simple : « Encrypted token » désactivé"
           }
         }
       ]
@@ -119,8 +119,8 @@
         "fr": "Autoriser l'ouverture de la porte (pull spring) depuis Gladys"
       },
       "description": {
-        "en": "Off by default. Opening a locked door also needs the unlocking option.",
-        "fr": "Désactivé par défaut. Ouvrir une porte verrouillée demande aussi l'option de déverrouillage."
+        "en": "Off by default. Opening the door always needs the unlocking option too. Also needed to unlock a lock whose automatic pull spring is on in the Tedee app.",
+        "fr": "Désactivé par défaut. Ouvrir la porte demande toujours aussi l'option de déverrouillage. Nécessaire aussi pour déverrouiller une serrure dont le pull spring automatique est activé dans l'application Tedee."
       },
       "required": false,
       "default": false

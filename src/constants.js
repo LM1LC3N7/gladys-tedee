@@ -33,22 +33,21 @@ export const LOCK_STATE = {
   UNPULLING: 255,
 };
 
-/** The states during which the lock moves: no command is sent then. */
+/**
+ * The states during which the lock moves: no command is sent then. PULLED is
+ * one of them: the latch is held, then released by the lock itself.
+ */
 export const MOVING_STATES = [
   LOCK_STATE.CALIBRATING,
   LOCK_STATE.UNLOCKING,
   LOCK_STATE.LOCKING,
+  LOCK_STATE.PULLED,
   LOCK_STATE.PULLING,
   LOCK_STATE.UNPULLING,
 ];
 
 /** The states whose position is known and still: a command may be sent. */
-export const STILL_STATES = [
-  LOCK_STATE.UNLOCKED,
-  LOCK_STATE.HALF_OPEN,
-  LOCK_STATE.LOCKED,
-  LOCK_STATE.PULLED,
-];
+export const STILL_STATES = [LOCK_STATE.UNLOCKED, LOCK_STATE.HALF_OPEN, LOCK_STATE.LOCKED];
 
 /** Door sensor states of the Bridge API (`doorState`). */
 export const DOOR_STATE = {
@@ -104,19 +103,29 @@ export const GLADYS = {
 export const POLL_INTERVAL = { default: 10, min: 5, max: 300 };
 
 export const TIMINGS = {
-  /** A read of the lock list or of the bridge. */
-  requestTimeout: 5_000,
+  /**
+   * A read of the lock list or of the bridge. Short: one request at a time
+   * goes to the bridge, and a command waits behind a read in progress.
+   */
+  requestTimeout: 3_000,
   /**
    * Gladys gives up on a set_value after 5 s and shows a failure: a command
    * not sent 3.5 s after it arrived is refused, never sent after the failure.
    */
   commandDeadline: 3_500,
-  /** The longest a command request may take, so its answer still beats the 5 s ack. */
+  /** The command request may last until 4.6 s after the arrival, 1.2 s at least. */
+  commandAnswerBy: 4_600,
   commandTimeout: 1_200,
   /** The shortest timeout worth a request, inside the command deadline. */
   minRequestTimeout: 300,
+  /**
+   * After a command is sent (or may have been): every command of the lock is
+   * refused until a read shows the expected end state (or jammed), or for
+   * 10 s at most; meanwhile the lock is shown moving.
+   */
+  commandGuard: 10_000,
   /** The re-reads of a lock after a command, to show the movement and its end. */
-  followUps: [1_500, 4_000, 8_000],
+  followUps: [1_500, 4_000, 8_000, 11_000],
   /** Pauses after failures (network, bridge busy…), growing. */
   backoff: [10_000, 30_000, 60_000, 120_000, 300_000],
   /** After a refused token: retried by itself every 5 minutes (a clock drift heals). */

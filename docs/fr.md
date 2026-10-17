@@ -19,7 +19,7 @@ Pour chaque serrure :
 | Verrou                        | Commande : 1 verrouille, 0 déverrouille (si autorisé). Affiche 1 verrouillée, 0 déverrouillée ou semi-verrouillée.                             |
 | État de la serrure            | 0 déverrouillée, 1 verrouillée, 2 en mouvement, 3 erreur (bloquée ou non calibrée).                                                            |
 | Statut                        | Texte : verrouillée, déverrouillée, semi-verrouillée, pêne tiré, en mouvement, bloquée, non calibrée, en mise à jour, non connectée au bridge. |
-| Ouvrir la porte (pull spring) | Bouton, seulement si le pull spring est activé dans l'application Tedee (si autorisé).                                                         |
+| Ouvrir la porte (pull spring) | Bouton, seulement si le pull spring est activé dans l'application Tedee (si les deux options sont autorisées).                                 |
 | Porte                         | Capteur d'ouverture, seulement si un Tedee Door Sensor est appairé.                                                                            |
 | Batterie                      | En %.                                                                                                                                          |
 | En charge                     | Tedee PRO seulement (batterie rechargeable).                                                                                                   |
@@ -34,9 +34,9 @@ seulement ; l'API locale ne documente pas les claviers, ce n'est pas vérifié.
 ## Installation
 
 1. Dans l'application Tedee, ouvrez le bridge, puis **Paramètres > API locale**
-   (Bridge API), activez-la et notez le **jeton** et le **mode** du jeton
-   (haché/« encrypted » ou simple/« plain »). Le firmware du bridge doit être
-   assez récent pour proposer l'API locale.
+   (Bridge API), activez-la et notez le **jeton** et l'état de l'interrupteur
+   **Encrypted token** (activé = mode **Haché**, désactivé = mode **Simple**).
+   Le firmware du bridge doit être assez récent pour proposer l'API locale.
 2. Donnez au bridge une adresse IP fixe dans votre box (réservation DHCP).
 3. Dans Gladys, installez l'intégration Tedee et saisissez l'**adresse IP du
    bridge**, le **jeton d'API** et le **mode du jeton**.
@@ -49,14 +49,26 @@ seulement ; l'API locale ne documente pas les claviers, ce n'est pas vérifié.
 - **Déverrouiller** est désactivé par défaut : activez **Autoriser le
   déverrouillage des serrures depuis Gladys** pour le permettre (scènes,
   tableau de bord, assistants vocaux).
-- **Ouvrir la porte (pull spring)** est désactivé par défaut : activez
-  **Autoriser l'ouverture de la porte**. Ouvrir une porte verrouillée la
-  déverrouille aussi : il faut alors les deux options.
+- **Ouvrir la porte (pull spring)** est désactivé par défaut et demande
+  **toujours les deux options** : **Autoriser le déverrouillage** et
+  **Autoriser l'ouverture de la porte**, quel que soit l'état de la serrure.
+  Sur une serrure verrouillée, le bouton envoie « déverrouiller ou tirer »
+  (mode 4) : la serrure se déverrouille, et ne tire le pêne que si le pull
+  spring automatique est activé dans l'application Tedee ; Gladys affiche
+  alors « Déverrouillage… ».
+- Si le **pull spring automatique** est activé dans l'application Tedee,
+  déverrouiller ouvre aussi la porte : le déverrouillage est alors refusé tant
+  que l'option d'ouverture de la porte n'est pas activée.
 - Avant chaque commande, l'intégration **relit l'état de la serrure** sur le
   bridge. La commande est refusée si cette lecture échoue, si la serrure n'est
-  pas connectée au bridge, si elle est en mouvement ou si son état est inconnu
-  (non calibrée, en mise à jour).
-- Les commandes d'une même serrure passent **une par une**.
+  pas connectée au bridge, si elle est en mouvement (pêne tiré compris) ou si
+  son état est inconnu (non calibrée, en mise à jour).
+- Les commandes d'une même serrure passent **une par une**, et une seule
+  requête à la fois part vers le bridge (les commandes avant les lectures).
+- Après une commande, toute nouvelle commande de la même serrure est refusée
+  (« mouvement en cours ») jusqu'à ce que le bridge montre l'état attendu (ou
+  une serrure bloquée), 10 secondes au plus ; la serrure reste affichée en
+  mouvement pendant ce temps.
 - Une commande qui ne peut pas être envoyée dans les **3,5 secondes** qui
   suivent son arrivée est refusée : Gladys affiche un échec au bout de
   5 secondes, et rien ne doit bouger après cet échec.
@@ -84,9 +96,13 @@ le réseau local : l'intégration interroge donc le bridge.
 
 ## Erreurs
 
-- **Jeton refusé** : vérifiez le jeton et le mode ; en mode haché, l'horloge
-  de la machine Gladys. Nouvel essai toutes les 5 minutes, ou tout de suite
-  avec **Tester la connexion**.
+- **Jeton refusé** (401, après un second essai avec une nouvelle heure) :
+  vérifiez le jeton ; en mode haché, l'horloge de la machine Gladys. Nouvel
+  essai toutes les 5 minutes, ou tout de suite avec **Tester la connexion**.
+- **Mode du jeton refusé** (403) : le mode ne correspond pas à l'interrupteur
+  « Encrypted token » de l'application.
+- **Serrure déconnectée** (405) et **erreur Bluetooth** entre le bridge et la
+  serrure (406) : la commande n'est pas exécutée, un message le dit.
 - **Bridge injoignable** : nouvel essai après 10 s, 30 s, 1 min, 2 min puis
   toutes les 5 minutes.
 - **Le bridge demande de ralentir** (429) : pause d'au moins 1 minute (au plus

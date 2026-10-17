@@ -19,6 +19,12 @@ test('the devices of a lock list: locks and keypads, others skipped', () => {
   assert.equal(lock.model, 'Tedee PRO');
   assert.equal(lock.connected, true);
   assert.equal(lock.pullSpring, true);
+  assert.equal(lock.autoPullSpring, false);
+  assert.equal(
+    pro({ deviceSettings: { autoPullSpringEnabled: 1 } }).autoPullSpring,
+    true,
+    'autoPullSpringEnabled read',
+  );
   assert.equal(lock.battery, 80);
   assert.equal(devices.get('23456').model, 'Tedee GO');
   assert.equal(devices.get('34567').kind, 'keypad');
@@ -75,7 +81,7 @@ test('lock states: locked, unlocked, half-locked, moving, jammed, unknown, offli
     [{ state: 6 }, 1, 1, 'locked'],
     [{ state: 2 }, 0, 0, 'unlocked'],
     [{ state: 3 }, 0, 0, 'half_open'],
-    [{ state: 7 }, 0, 0, 'pulled'],
+    [{ state: 7 }, undefined, 2, 'pulled'],
     [{ state: 5 }, undefined, 2, 'locking'],
     [{ state: 4 }, undefined, 2, 'unlocking'],
     [{ state: 8 }, undefined, 2, 'pulling'],

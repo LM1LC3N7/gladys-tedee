@@ -131,11 +131,25 @@ test('unlocking is refused by default, without asking the bridge', async (t) => 
   assert.equal(bridge.commands().length, 0);
 });
 
-test('unlocking with allow_unlock: mode 3, without the pull spring', async (t) => {
+test('unlocking with allow_unlock: mode 3 in the header and the query', async (t) => {
   const { gladys, bridge } = await setup(t, { config: { allow_unlock: true } });
   const ack = await set(gladys, IDS.pro, 'lock', 0);
   assert.equal(ack.success, true, ack.error);
   assert.deepEqual(commandPaths(bridge), [`/v1.0/lock/${IDS.pro}/unlock?mode=3`]);
+  assert.equal(bridge.commands()[0].modeHeader, '3');
+});
+
+test('with the auto pull spring on, unlocking needs allow_pull too', async (t) => {
+  const { gladys, bridge, app } = await setup(t, { config: { allow_unlock: true } });
+  bridge.lock(IDS.pro).deviceSettings.autoPullSpringEnabled = 1;
+  let ack = await set(gladys, IDS.pro, 'lock', 0);
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /pull spring automatique est activé/);
+  assert.equal(bridge.commands().length, 0);
+  await app.configUpdated({ ...gladys.fake.config, allow_pull: true });
+  ack = await set(gladys, IDS.pro, 'lock', 0);
+  assert.equal(ack.success, true, ack.error);
+  assert.equal(bridge.commands().length, 1);
 });
 
 test('half-locked counts as unlocked for Gladys, and can be locked', async (t) => {
@@ -154,6 +168,7 @@ test('refused when the lock moves, is offline, or its state is unknown', async (
   const cases = [
     [{ state: 5 }, /en mouvement/],
     [{ state: 1 }, /en mouvement/],
+    [{ state: 7 }, /en mouvement/],
     [{ state: 2, isConnected: 0 }, /pas connectée/],
     [{ state: 9 }, /inconnu/],
     [{ state: 0 }, /inconnu/],
@@ -199,9 +214,80 @@ test('one command at a time per lock: the second one sees the movement', async (
   ]);
   assert.equal(a.success, true, a.error);
   assert.equal(b.success, false);
-  assert.match(b.error, /en mouvement/);
+  assert.match(b.error, /mouvement est en cours/);
   assert.equal(bridge.commands().length, 1);
   assert.equal(bridge.reads(IDS.go).length, 2);
+});
+
+test('race: unlock then lock while the state is unchanged, the lock is refused', async (t) => {
+  const { gladys, bridge } = await setup(t, {
+    config: { allow_unlock: true },
+    bridgeOptions: { effect: 'none' },
+  });
+  const [a, b] = await Promise.all([
+    set(gladys, IDS.pro, 'lock', 0),
+    set(gladys, IDS.pro, 'lock', 1),
+  ]);
+  assert.equal(a.success, true, a.error);
+  // Still "locked" on the bridge, but never "already locked": in progress.
+  assert.equal(b.success, false);
+  assert.match(b.error, /mouvement est en cours/);
+  assert.deepEqual(commandPaths(bridge), [`/v1.0/lock/${IDS.pro}/unlock?mode=3`]);
+});
+
+test('race: lock then pull, the pull is refused', async (t) => {
+  const { gladys, bridge } = await setup(t, {
+    config: { allow_unlock: true, allow_pull: true },
+    bridgeOptions: { effect: 'none' },
+  });
+  bridge.lock(IDS.pro).state = 2;
+  const [a, b] = await Promise.all([
+    set(gladys, IDS.pro, 'lock', 1),
+    set(gladys, IDS.pro, 'pull', 1),
+  ]);
+  assert.equal(a.success, true, a.error);
+  assert.equal(b.success, false);
+  assert.match(b.error, /mouvement est en cours/);
+  assert.deepEqual(commandPaths(bridge), [`/v1.0/lock/${IDS.pro}/lock`]);
+});
+
+test('the guard: a stale read keeps the lock moving, the end state lifts it', async (t) => {
+  const { gladys, bridge, app } = await setup(t, {
+    config: { allow_unlock: true },
+    bridgeOptions: { effect: 'none' },
+  });
+  const ack = await set(gladys, IDS.pro, 'lock', 0);
+  assert.equal(ack.success, true, ack.error);
+  // A poll answering the old state (or an unknown one) does not end the movement.
+  for (const state of [6, 9]) {
+    bridge.lock(IDS.pro).state = state;
+    await app.refresh();
+    assert.equal(last(gladys, IDS.pro, 'state'), 2, `state ${state}`);
+    assert.equal(last(gladys, IDS.pro, 'status'), 'Déverrouillage…');
+  }
+  bridge.lock(IDS.pro).state = 2;
+  await app.refresh();
+  assert.equal(last(gladys, IDS.pro, 'state'), 0);
+  assert.equal(app.guards.size, 0);
+  // A new command is accepted again.
+  const again = await set(gladys, IDS.pro, 'lock', 1);
+  assert.equal(again.success, true, again.error);
+});
+
+test('the guard expires after 10 s, or ends on a jam', async (t) => {
+  const { gladys, bridge, app, clock } = await setup(t, {
+    bridgeOptions: { effect: 'none' },
+  });
+  await set(gladys, IDS.go, 'lock', 1);
+  assert.match((await set(gladys, IDS.go, 'lock', 1)).error, /mouvement est en cours/);
+  clock.offset += 10_500;
+  await app.refresh();
+  assert.equal(last(gladys, IDS.go, 'state'), 0, 'the real state again');
+  assert.equal((await set(gladys, IDS.go, 'lock', 1)).success, true);
+  bridge.lock(IDS.go).jammed = 1;
+  await app.refresh();
+  assert.equal(app.guards.size, 0);
+  assert.equal(last(gladys, IDS.go, 'state'), 3);
 });
 
 test('a command queued past its deadline is refused without a request', async (t) => {
@@ -223,22 +309,33 @@ test('a command queued past its deadline is refused without a request', async (t
   assert.equal(bridge.reads(IDS.go).length, 1);
 });
 
-test('opening the door: off by default, needs unlocking on a locked lock', async (t) => {
+test('opening the door always needs both options; a locked door gets mode 4', async (t) => {
   const { gladys, bridge, app } = await setup(t);
-  let ack = await set(gladys, IDS.pro, 'pull', 1);
-  assert.match(ack.error, /ouverture de la porte depuis Gladys est désactivée/);
+  for (const options of [{}, { allow_pull: true }, { allow_unlock: true }]) {
+    await app.configUpdated({ ...gladys.fake.config, ...options });
+    const ack = await set(gladys, IDS.pro, 'pull', 1);
+    assert.match(ack.error, /demande les deux options/, JSON.stringify(options));
+  }
+  // Also on an unlocked lock.
+  bridge.lock(IDS.pro).state = 2;
   await app.configUpdated({ ...gladys.fake.config, allow_pull: true });
-  ack = await set(gladys, IDS.pro, 'pull', 1);
-  assert.match(ack.error, /demande aussi l'option de déverrouillage/);
-  assert.equal(bridge.commands().length, 0);
+  assert.match((await set(gladys, IDS.pro, 'pull', 1)).error, /demande les deux options/);
+  assert.equal(bridge.requests.filter((r) => r.path.startsWith('/v1.0/lock/')).length, 0);
+  bridge.lock(IDS.pro).state = 6;
   await app.configUpdated({ ...gladys.fake.config, allow_pull: true, allow_unlock: true });
-  ack = await set(gladys, IDS.pro, 'pull', 1);
+  const ack = await set(gladys, IDS.pro, 'pull', 1);
   assert.equal(ack.success, true, ack.error);
   assert.deepEqual(commandPaths(bridge), [`/v1.0/lock/${IDS.pro}/unlock?mode=4`]);
+  assert.equal(bridge.commands()[0].modeHeader, '4');
+  // Mode 4 on a locked lock unlocks (pulls only with the auto pull spring).
+  assert.equal(last(gladys, IDS.pro, 'status'), 'Déverrouillage…');
+  assert.equal((await set(gladys, IDS.pro, 'pull', 0)).success, false, 'pull takes 1 only');
 });
 
 test('opening an unlocked door pulls only; no pull spring, refused', async (t) => {
-  const { gladys, bridge, app } = await setup(t, { config: { allow_pull: true } });
+  const { gladys, bridge, app } = await setup(t, {
+    config: { allow_pull: true, allow_unlock: true },
+  });
   bridge.lock(IDS.pro).state = 2;
   let ack = await set(gladys, IDS.pro, 'pull', 1);
   assert.equal(ack.success, true, ack.error);
@@ -254,10 +351,42 @@ test('opening an unlocked door pulls only; no pull spring, refused', async (t) =
 
 test('a command the bridge does not confirm in time says the lock may move', async (t) => {
   const { gladys, bridge } = await setup(t);
-  bridge.hook = (r) => (r.method === 'POST' ? { delay: 2_000, status: 202 } : undefined);
+  // The command request may last until 4.6 s after the arrival.
+  bridge.hook = (r) => (r.method === 'POST' ? { delay: 5_500, status: 204 } : undefined);
+  const started = Date.now();
   const ack = await set(gladys, IDS.go, 'lock', 1);
+  const took = Date.now() - started;
+  assert.ok(took >= 4_000 && took < 5_000, `answered after ${took} ms`);
   assert.equal(ack.success, false);
   assert.match(ack.error, /peut quand même bouger/);
+  // It may have moved: guarded like a command sent.
+  bridge.hook = undefined;
+  assert.match((await set(gladys, IDS.go, 'lock', 1)).error, /mouvement est en cours/);
+});
+
+test('HTTP 405 and 406 on a command have their own messages', async (t) => {
+  const { gladys, bridge } = await setup(t);
+  bridge.hook = (r) => (r.method === 'POST' ? { status: 405, body: {} } : undefined);
+  assert.match((await set(gladys, IDS.go, 'lock', 1)).error, /HTTP 405/);
+  bridge.hook = (r) => (r.method === 'POST' ? { status: 406, body: {} } : undefined);
+  assert.match((await set(gladys, IDS.go, 'lock', 1)).error, /Erreur Bluetooth/);
+});
+
+test('403: the token mode is refused, not the token', async (t) => {
+  const { gladys, bridge, app } = await setup(t);
+  bridge.hook = () => ({ status: 403, body: {} });
+  await app.refresh();
+  assert.equal(gladys.fake.connectionStatus.connected, false);
+  assert.match(gladys.fake.connectionStatus.message.en, /refused the token mode \(HTTP 403\)/);
+  assert.match(gladys.fake.connectionStatus.message.fr, /activé = Haché, désactivé = Simple/);
+});
+
+test('a refused token alone does not refuse a command', async (t) => {
+  const { gladys, bridge, app } = await setup(t);
+  app.refused = true;
+  const ack = await set(gladys, IDS.go, 'lock', 1);
+  assert.equal(ack.success, true, ack.error);
+  assert.equal(bridge.commands().length, 1);
 });
 
 test('a refused token: status, retried by the test button, never logged', async (t) => {
