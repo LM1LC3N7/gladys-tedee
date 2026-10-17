@@ -1,6 +1,6 @@
 {
   "name": "gladys-tedee",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for Tedee locks (local API of the Tedee Bridge). Unofficial, not affiliated with Tedee.",
   "type": "module",

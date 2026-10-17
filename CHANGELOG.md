@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-17
+
 ### Added
 
 - Tedee GO and PRO locks through the local API of the Tedee Bridge (v1.0),
@@ -36,4 +38,5 @@ the notes of the version's GitHub Release.
 - "Test the connection" button.
 - Feature names and status texts in French or English.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-tedee/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-tedee/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-tedee/releases/tag/v0.1.1
