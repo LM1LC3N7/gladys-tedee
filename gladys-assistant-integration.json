@@ -6,8 +6,8 @@
     "en": "Tedee GO and PRO smart locks through the local API of the Tedee Bridge.",
     "fr": "Serrures connectées Tedee GO et PRO par l'API locale du Tedee Bridge."
   },
-  "version": "0.1.1",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-tedee:0.1.1",
+  "version": "0.1.2",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-tedee:0.1.2",
   "gladys_version": ">=5.1.0",
   "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-tedee/main/cover.png",
   "categories": ["security"],
